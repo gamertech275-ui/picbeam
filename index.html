@@ -347,6 +347,19 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 ════════════════════════════════════════════════════ -->
 <script>
 // ── CONFIG ──────────────────────────────────────────────
+// SUPABASE SETUP — run this SQL in your Supabase SQL editor:
+//
+//   create table if not exists picbeam_sessions (
+//     session_id      text primary key,
+//     image_data      text,
+//     updated_at      timestamptz default now(),
+//     d2m_data        text,
+//     d2m_updated_at  timestamptz,
+//     phone_connected boolean default false
+//   );
+//   alter table picbeam_sessions enable row level security;
+//   create policy "public rw" on picbeam_sessions for all using (true) with check (true);
+//
 const SUPABASE_URL = 'https://ldrrdlugchfauxqsdsmf.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxkcnJkbHVnY2hmYXV4cXNkc21mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU2NzI3NDgsImV4cCI6MjA4MTI0ODc0OH0.wxAbam0aRmpUvTn_VIHUfdkGXj5Qn8FILIeoSF97N7A';
 const SELF_URL     = location.origin + location.pathname;
@@ -413,22 +426,46 @@ window.addEventListener('resize', ()=>{
   }, 200);
 });
 
-(function init(){ applyMode(getMode()); })();
+(function init(){
+  // Quick connectivity check
+  fetch(`${SUPABASE_URL}/rest/v1/picbeam_sessions?limit=1`, {
+    method: 'GET',
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+  }).then(r => {
+    if(!r.ok) showToast(`⚠ Database error ${r.status} — check Supabase setup`);
+  }).catch(() => showToast('⚠ Cannot reach database — check internet / Supabase URL'));
+  applyMode(getMode());
+})();
 
 // ── SUPABASE ─────────────────────────────────────────────
 async function sbFetch(method, path, body){
-  const opts = {
-    method,
-    headers:{
-      'apikey': SUPABASE_KEY,
-      'Authorization': 'Bearer ' + SUPABASE_KEY,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation'
-    }
+  const headers = {
+    'apikey': SUPABASE_KEY,
+    'Authorization': 'Bearer ' + SUPABASE_KEY,
+    'Content-Type': 'application/json',
   };
+  // Only request representation on GET/POST so PATCH doesn't trigger 406
+  if(method === 'GET' || method === 'POST'){
+    headers['Prefer'] = 'return=representation';
+  }
+  // Upsert support: if path contains '?on_conflict=', move it to Prefer header
+  let fetchPath = path;
+  const conflictMatch = path.match(/\?on_conflict=([^&]+)(.*)/);
+  if(conflictMatch){
+    fetchPath = path.replace(/\?on_conflict=[^&]+&?/, '?').replace(/\?$/, '');
+    headers['Prefer'] = `resolution=ignore-duplicates,return=representation`;
+    headers['X-Upsert'] = 'true';
+    // Use proper upsert path
+    fetchPath = path.split('?')[0];
+  }
+  const opts = { method, headers };
   if(body) opts.body = JSON.stringify(body);
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, opts);
-  if(!res.ok) throw new Error(`Supabase ${res.status}`);
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${fetchPath}`, opts);
+  if(!res.ok){
+    let errText = '';
+    try{ errText = await res.text(); }catch(e){}
+    throw new Error(`Supabase ${res.status}: ${errText}`);
+  }
   return res;
 }
 
@@ -502,10 +539,17 @@ function newSession(){
   dUpdateHistory();
   dClearPreview();
   setupDesktopSession(sessionId);
-  // FIX: Use upsert via POST with onConflict=ignore to avoid duplicate row errors
-  sbFetch('POST','picbeam_sessions?on_conflict=session_id',
-    {session_id:sessionId, image_data:null, d2m_data:null, phone_connected:false}
-  ).catch(()=>{});
+  // FIX: Use upsert via POST with proper Prefer header
+  fetch(`${SUPABASE_URL}/rest/v1/picbeam_sessions`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=ignore-duplicates,return=representation'
+    },
+    body: JSON.stringify({session_id:sessionId, image_data:null, d2m_data:null, phone_connected:false})
+  }).catch(()=>{});
   showToast('New session started — scan QR or share link');
 }
 
@@ -693,12 +737,17 @@ document.getElementById('d-clear-btn').addEventListener('click', dClearPreview);
 // ── MOBILE ───────────────────────────────────────────────
 async function mMarkConnected(){
   try{
-    // FIX: Upsert-safe PATCH; ensure row exists first via GET
-    const res = await sbFetch('GET',`picbeam_sessions?session_id=eq.${sessionId}&select=session_id`);
-    const rows = await res.json();
-    if(rows && rows.length){
-      await sbFetch('PATCH',`picbeam_sessions?session_id=eq.${sessionId}`,{phone_connected:true});
-    }
+    // Try to upsert the session row (creates it if missing, updates phone_connected if it exists)
+    await fetch(`${SUPABASE_URL}/rest/v1/picbeam_sessions`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=representation'
+      },
+      body: JSON.stringify({session_id:sessionId, phone_connected:true})
+    });
   } catch(e){}
 }
 
