@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PicBeam</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="manifest" href="/site.webmanifest">
+<style>
+/* ═══════════════════════════════════════════════════════
+   TOKENS
+═══════════════════════════════════════════════════════ */
+:root{
+  --bg:#0f0f11; --surface:#1a1a1e; --border:#2a2a30;
+  --accent:#6c63ff; --accent2:#a78bfa;
+  --text:#f0effe; --muted:#888;
+  --success:#22c55e; --danger:#ef4444; --warn:#f59e0b;
+  --radius:14px;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100dvh}
+
+/* ── shared ── */
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background .3s}
+.dot.waiting {background:var(--warn);  animation:pulse 1.5s ease-in-out infinite}
+.dot.sending {background:var(--accent);animation:pulse  .8s ease-in-out infinite}
+.dot.connected,.dot.success{background:var(--success);animation:none}
+.dot.received {background:var(--accent);animation:none}
+.dot.error    {background:var(--danger); animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+.btn{padding:10px 0;background:var(--accent);color:#fff;border:none;border-radius:8px;
+  font-size:14px;font-weight:500;cursor:pointer;width:100%;transition:opacity .2s,transform .1s}
+.btn:hover{opacity:.85}.btn:active{transform:scale(.98)}.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.secondary{background:transparent;border:1px solid var(--border);color:var(--text)}
+
+.logo{font-size:22px;font-weight:700;letter-spacing:-.5px}
+.logo span{color:var(--accent2)}
+
+.progress-bar-wrap{width:100%;height:4px;background:var(--border);border-radius:4px;overflow:hidden}
+.progress-bar{height:100%;background:var(--accent);border-radius:4px;width:0%;transition:width .3s}
+
+#toast{
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(70px);
+  background:#222;color:var(--text);padding:10px 20px;border-radius:24px;
+  font-size:13px;border:1px solid var(--border);transition:transform .3s,opacity .3s;
+  opacity:0;white-space:nowrap;z-index:9999;pointer-events:none;
+}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+
+#paste-flash{position:fixed;inset:0;background:rgba(108,99,255,.15);pointer-events:none;opacity:0;transition:opacity .2s;z-index:9998}
+#paste-flash.show{opacity:1}
+
+@keyframes flash-border{0%,100%{border-color:var(--border)}30%,70%{border-color:var(--success);box-shadow:0 0 0 3px #22c55e22}}
+.flash{animation:flash-border 1.5s ease}
+
+/* ═══════════════════════════════════════════════════════
+   DESKTOP UI  (≥768px)
+═══════════════════════════════════════════════════════ */
+#desktop-ui{
+  display:none;flex-direction:column;align-items:center;
+  padding:32px 16px 48px;min-height:100dvh;
+}
+#desktop-ui header{max-width:760px;width:100%;display:flex;align-items:center;gap:10px;margin-bottom:32px}
+.badge{margin-left:auto;font-size:11px;background:#1e1b3a;color:var(--accent2);padding:4px 10px;border-radius:20px;border:1px solid #3d3880}
+
+.d-grid{max-width:760px;width:100%;display:grid;grid-template-columns:300px 1fr;gap:16px}
+
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:24px;display:flex;flex-direction:column;align-items:center;gap:14px}
+.panel-lbl{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);align-self:flex-start}
+
+#qr-box{width:200px;height:200px;background:#fff;border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#qr-box canvas,#qr-box img{border-radius:6px}
+
+.d-session-id{font-family:monospace;font-size:13px;color:var(--accent2);background:#1e1b3a;padding:6px 14px;border-radius:20px;letter-spacing:2px}
+
+.status-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+
+.link-row{display:flex;gap:8px;align-items:center;width:100%}
+.link-a{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  padding:8px 12px;font-size:11px;color:var(--muted);font-family:monospace;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none;display:block}
+.copy-btn{padding:8px 12px;background:transparent;border:1px solid var(--border);border-radius:8px;
+  color:var(--text);font-size:12px;cursor:pointer;white-space:nowrap;transition:background .15s}
+.copy-btn:hover{background:#2a2a30}
+
+.upload-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;display:flex;flex-direction:column;gap:14px}
+
+.drop-area{border:2px dashed var(--border);border-radius:10px;padding:32px 16px;
+  text-align:center;color:var(--muted);font-size:13px;cursor:pointer;
+  transition:border-color .2s,background .2s;position:relative}
+.drop-area:hover,.drop-area.drag-over{border-color:var(--accent);background:#1a1a2e}
+.drop-area svg{margin-bottom:8px;opacity:.5}
+.drop-area p{line-height:1.7}
+.drop-area input{position:absolute;inset:0;opacity:0;cursor:pointer}
+
+#d-preview-area{display:none;flex-direction:column;gap:12px}
+#d-preview-img{width:100%;max-height:280px;object-fit:contain;border-radius:8px;border:1px solid var(--border);background:#111}
+.img-meta{font-size:12px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.source-tag{margin-left:auto;padding:2px 8px;border-radius:10px;font-size:11px;background:#1e1b3a;color:#a78bfa}
+
+#d-history-panel{max-width:760px;width:100%;margin-top:16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px}
+.h-label{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:14px}
+#d-history-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:8px}
+.h-thumb{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:pointer;transition:border-color .2s,transform .15s}
+.h-thumb:hover{border-color:var(--accent);transform:scale(1.04)}
+.h-empty{color:var(--muted);font-size:13px;text-align:center;padding:12px 0}
+
+/* ═══════════════════════════════════════════════════════
+   MOBILE UI  (<768px)
+═══════════════════════════════════════════════════════ */
+#mobile-ui{display:none;flex-direction:column;align-items:center;padding:24px 16px 40px;min-height:100dvh}
+
+.m-logo{font-size:20px;font-weight:700;letter-spacing:-.5px;margin-bottom:8px}
+.m-logo span{color:var(--accent2)}
+
+.session-chip{font-size:11px;background:#1e1b3a;color:var(--accent2);padding:3px 12px;border-radius:20px;border:1px solid #3d3880;letter-spacing:2px;font-family:monospace;margin-bottom:28px}
+
+.m-status{width:100%;max-width:420px;display:flex;align-items:center;gap:8px;
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:10px 14px;margin-bottom:20px;font-size:13px;color:var(--muted);transition:border-color .3s}
+.m-status.sending{border-color:var(--accent);color:var(--text)}
+.m-status.success{border-color:var(--success);color:var(--success)}
+.m-status.error  {border-color:var(--danger); color:var(--danger)}
+
+.m-upload{width:100%;max-width:420px;display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
+
+.m-drop{width:100%;border:2px dashed var(--border);border-radius:var(--radius);padding:26px 16px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  cursor:pointer;position:relative;transition:border-color .2s,background .2s;text-align:center}
+.m-drop:hover,.m-drop.drag-over{border-color:var(--accent);background:#1a1a2e}
+.m-drop input{position:absolute;inset:0;opacity:0;cursor:pointer;font-size:0}
+.m-drop-icon{font-size:30px}
+.m-drop-title{font-size:14px;font-weight:600;color:var(--text)}
+.m-drop-sub{font-size:12px;color:var(--muted)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:4px}
+.chip{font-size:11px;background:#1e1b3a;color:var(--accent2);padding:3px 9px;border-radius:20px;border:1px solid #3d3880}
+
+.or-div{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px}
+.or-div::before,.or-div::after{content:'';flex:1;height:1px;background:var(--border)}
+
+.m-btn-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%}
+
+.m-cam{padding:15px 0;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);
+  font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  gap:8px;transition:opacity .2s,transform .1s;position:relative;overflow:hidden}
+.m-cam:active{transform:scale(.97);opacity:.9}
+.m-cam input{position:absolute;inset:0;opacity:0;cursor:pointer;font-size:0}
+
+.m-gal{padding:15px 0;background:transparent;color:var(--text);border:1px solid var(--border);
+  border-radius:var(--radius);font-size:14px;font-weight:500;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  position:relative;overflow:hidden;transition:border-color .2s,background .2s}
+.m-gal:hover{border-color:var(--accent2);background:#1a1a2e}
+.m-gal input{position:absolute;inset:0;opacity:0;cursor:pointer}
+
+.paste-hint{width:100%;text-align:center;font-size:12px;color:var(--muted);margin-top:-4px}
+.paste-hint kbd{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;font-family:monospace;color:var(--accent2)}
+
+.m-prog-wrap{width:100%;max-width:420px;height:4px;background:var(--border);border-radius:4px;overflow:hidden;margin-bottom:8px;display:none}
+.m-prog-bar{height:100%;background:var(--accent);border-radius:4px;width:0%;transition:width .3s}
+
+#m-preview-wrap{display:none;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:420px;margin-bottom:20px}
+#m-preview-lbl{align-self:flex-start;font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted)}
+#m-preview-img{width:100%;max-height:300px;object-fit:contain;border-radius:10px;border:1px solid var(--border);background:#111}
+
+#m-sent-sec{width:100%;max-width:420px;display:none}
+.m-sent-lbl{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:12px}
+#m-sent-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.s-thumb{aspect-ratio:1;object-fit:cover;border-radius:8px;border:1px solid var(--border);width:100%}
+.m-sent-cnt{font-size:12px;color:var(--muted);margin-top:10px;text-align:center}
+.m-divider{width:100%;max-width:420px;height:1px;background:var(--border);margin:4px 0 20px;display:none}
+
+/* no-session */
+#no-session{display:none;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100dvh;gap:12px;text-align:center;color:var(--muted);padding:32px}
+#no-session .ns-i{font-size:48px;margin-bottom:8px}
+#no-session h2{font-size:18px;color:var(--text)}
+#no-session p{font-size:13px;line-height:1.6;max-width:280px}
+</style>
+</head>
+<body>
+
+<div id="paste-flash"></div>
+<div id="toast"></div>
+
+<!-- ── NO SESSION ── -->
+<div id="no-session">
+  <div class="ns-i">🔗</div>
+  <h2>No session found</h2>
+  <p>Open PicBeam in a desktop browser (≥768 px wide) to generate a QR code and session link.</p>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     DESKTOP UI
+════════════════════════════════════════════════════ -->
+<div id="desktop-ui">
+  <header>
+    <div class="logo">Pic<span>Beam</span></div>
+    <div class="badge">Desktop</div>
+  </header>
+
+  <div class="d-grid">
+    <!-- QR panel -->
+    <div class="panel">
+      <div class="panel-lbl">Link a Device</div>
+      <div id="qr-box">
+        <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="#ccc" opacity=".3">
+          <rect x="3" y="3" width="7" height="7" rx="1" stroke-width="1.5"/>
+          <rect x="14" y="3" width="7" height="7" rx="1" stroke-width="1.5"/>
+          <rect x="3" y="14" width="7" height="7" rx="1" stroke-width="1.5"/>
+          <circle cx="17.5" cy="17.5" r="2" stroke-width="1.5"/>
+        </svg>
+      </div>
+      <div class="d-session-id" id="d-sid">------</div>
+      <div class="status-row">
+        <div class="dot waiting" id="d-dot"></div>
+        <span id="d-status">Waiting for device…</span>
+      </div>
+      <div class="link-row">
+        <a class="link-a" id="d-link" href="#" target="_blank" rel="noopener">—</a>
+        <button class="copy-btn" onclick="dCopyLink()">Copy</button>
+      </div>
+      <button class="btn secondary" onclick="newSession()">↻ New Session</button>
+    </div>
+
+    <!-- Upload / preview panel -->
+    <div class="upload-panel" id="d-upload-panel">
+      <div class="panel-lbl">Upload / Received Image</div>
+
+      <div class="drop-area" id="d-drop">
+        <svg width="32" height="32" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 16l4-4 4 4M12 12l4-4 4 4M12 12v8"/>
+          <path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/>
+        </svg>
+        <p>Drop images here or click to browse</p>
+        <p style="font-size:11px;color:var(--muted)">Scan QR to send from phone &nbsp;·&nbsp; Ctrl+V to paste</p>
+        <input type="file" accept="image/*" multiple id="d-file-inp">
+      </div>
+
+      <div class="progress-bar-wrap" id="d-prog-wrap" style="display:none">
+        <div class="progress-bar" id="d-prog-bar"></div>
+      </div>
+
+      <div id="d-preview-area">
+        <img id="d-preview-img" src="" alt="Preview">
+        <div class="img-meta">
+          <span>📐 <span id="d-img-size">—</span></span>
+          <span>📁 <span id="d-img-name">—</span></span>
+          <span class="source-tag" id="d-src-tag">local</span>
+        </div>
+        <button class="btn" onclick="dDownload()">⬇ Download</button>
+        <button class="btn secondary" onclick="dClearPreview()">✕ Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div id="d-history-panel">
+    <div class="h-label">Received &amp; Sent Images</div>
+    <div id="d-history-grid"><div class="h-empty">No images yet</div></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     MOBILE UI
+════════════════════════════════════════════════════ -->
+<div id="mobile-ui">
+  <div class="m-logo">Pic<span>Beam</span></div>
+  <div class="session-chip" id="m-sid">------</div>
+
+  <div class="m-status" id="m-status-bar">
+    <div class="dot waiting" id="m-dot"></div>
+    <span id="m-status-txt">Ready to send</span>
+  </div>
+
+  <div class="m-upload">
+    <div class="m-drop" id="m-drop">
+      <div class="m-drop-icon">📂</div>
+      <div class="m-drop-title">Drop image or tap to browse</div>
+      <div class="m-drop-sub">Multiple files OK</div>
+      <div class="chips">
+        <span class="chip">Drag &amp; Drop</span>
+        <span class="chip">Browse Files</span>
+        <span class="chip">Ctrl+V Paste</span>
+      </div>
+      <input type="file" accept="image/*" multiple id="m-browse">
+    </div>
+
+    <div class="or-div">or use camera</div>
+
+    <div class="m-btn-row">
+      <button class="m-cam">
+        <span>📸</span><span>Camera</span>
+        <input type="file" accept="image/*" capture="environment" id="m-cam">
+      </button>
+      <button class="m-gal">
+        <span>🖼</span><span>Gallery</span>
+        <input type="file" accept="image/*" multiple id="m-gallery">
+      </button>
+    </div>
+
+    <div class="paste-hint"><kbd>Ctrl</kbd>+<kbd>V</kbd> or <kbd>⌘V</kbd> to paste a screenshot</div>
+  </div>
+
+  <div class="m-prog-wrap" id="m-prog-wrap"><div class="m-prog-bar" id="m-prog-bar"></div></div>
+
+  <div id="m-preview-wrap">
+    <div id="m-preview-lbl">Last sent</div>
+    <img id="m-preview-img" src="" alt="">
+  </div>
+
+  <div class="m-divider" id="m-divider"></div>
+
+  <div id="m-sent-sec">
+    <div class="m-sent-lbl">Sent this session</div>
+    <div id="m-sent-grid"></div>
+    <div class="m-sent-cnt" id="m-sent-cnt"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     SCRIPT
+════════════════════════════════════════════════════ -->
+<script>
+// ── CONFIG ──────────────────────────────────────────────
+const SUPABASE_URL = 'https://ldrrdlugchfauxqsdsmf.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxkcnJkbHVnY2hmYXV4cXNkc21mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU2NzI3NDgsImV4cCI6MjA4MTI0ODc0OH0.wxAbam0aRmpUvTn_VIHUfdkGXj5Qn8FILIeoSF97N7A';
+const SELF_URL     = location.origin + location.pathname;
+const BREAKPOINT   = 768; // px
+
+// ── STATE ────────────────────────────────────────────────
+const urlParams    = new URLSearchParams(location.search);
+const URL_SESSION  = urlParams.get('session'); // present when opened via QR link
+
+let sessionId      = URL_SESSION || '';
+let pollInterval   = null;
+let lastChecked    = null;
+let dHistory       = [];
+let dCurrentData   = null;
+let mSentCount     = 0;
+let currentMode    = '';
+
+// ── LAYOUT SWITCHER ──────────────────────────────────────
+function getMode(){ return window.innerWidth >= BREAKPOINT ? 'desktop' : 'mobile'; }
+
+function applyMode(mode){
+  if(mode === currentMode) return;
+  currentMode = mode;
+
+  document.getElementById('desktop-ui').style.display = 'none';
+  document.getElementById('mobile-ui') .style.display = 'none';
+  document.getElementById('no-session').style.display = 'none';
+
+  if(mode === 'desktop'){
+    document.getElementById('desktop-ui').style.display = 'flex';
+    if(!sessionId){
+      newSession();
+    } else {
+      // URL has a session: this desktop was linked; show session + start polling
+      setupDesktopSession(sessionId);
+    }
+  } else {
+    // Mobile
+    document.getElementById('mobile-ui').style.display = 'flex';
+    if(!sessionId){
+      mSetStatus('error', 'No session — open PicBeam on desktop first');
+    } else {
+      document.getElementById('m-sid').textContent = sessionId;
+      mMarkConnected();
+    }
+  }
+}
+
+let resizeTimer;
+window.addEventListener('resize', ()=>{
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(()=> applyMode(getMode()), 200);
+});
+
+(function init(){ applyMode(getMode()); })();
+
+// ── SUPABASE ─────────────────────────────────────────────
+async function sbFetch(method, path, body){
+  const opts = {
+    method,
+    headers:{
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    }
+  };
+  if(body) opts.body = JSON.stringify(body);
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, opts);
+  if(!res.ok) throw new Error(`Supabase ${res.status}`);
+  return res;
+}
+
+// ── SHARED UTILS ─────────────────────────────────────────
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=> t.classList.remove('show'), 2800);
+}
+
+function pasteFlash(){
+  const el = document.getElementById('paste-flash');
+  el.classList.add('show');
+  setTimeout(()=> el.classList.remove('show'), 350);
+}
+
+function sleep(ms){ return new Promise(r=> setTimeout(r, ms)); }
+
+function readFile(file){
+  return new Promise((res, rej)=>{
+    const r = new FileReader();
+    r.onload = e => res(e.target.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+async function compress(dataUrl, maxDim=1400, q=0.85){
+  return new Promise(res=>{
+    const img = new Image();
+    img.onload = ()=>{
+      let {width:w, height:h} = img;
+      if(w > maxDim || h > maxDim){
+        if(w>h){ h=Math.round(h*maxDim/w); w=maxDim; }
+        else   { w=Math.round(w*maxDim/h); h=maxDim; }
+      }
+      const c = document.createElement('canvas');
+      c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      res(c.toDataURL('image/jpeg',q));
+    };
+    img.src = dataUrl;
+  });
+}
+
+function genSid(){ return Math.random().toString(36).substr(2,6).toUpperCase(); }
+
+async function extractImages(dt){
+  const files = [];
+  if(dt.files && dt.files.length){
+    for(const f of dt.files) if(f.type.startsWith('image/')) files.push(f);
+    if(files.length) return files;
+  }
+  if(dt.items){
+    for(const item of dt.items)
+      if(item.kind==='file' && item.type.startsWith('image/')){
+        const f = item.getAsFile(); if(f) files.push(f);
+      }
+  }
+  return files;
+}
+
+// ── DESKTOP ──────────────────────────────────────────────
+function newSession(){
+  if(pollInterval) clearInterval(pollInterval);
+  sessionId   = genSid();
+  lastChecked = null;
+  dHistory    = [];
+  dCurrentData = null;
+  dUpdateHistory();
+  dClearPreview();
+  setupDesktopSession(sessionId);
+  // Register in Supabase
+  sbFetch('POST','picbeam_sessions',{session_id:sessionId,image_data:null,phone_connected:false}).catch(()=>{});
+  showToast('New session started — scan QR or share link');
+}
+
+function setupDesktopSession(sid){
+  sessionId = sid;
+  const url = `${SELF_URL}?session=${sid}`;
+
+  document.getElementById('d-sid').textContent = sid;
+  const la = document.getElementById('d-link');
+  la.textContent = url; la.href = url;
+
+  dSetStatus('waiting','Waiting for device…');
+
+  // Build QR
+  const qrBox = document.getElementById('qr-box');
+  qrBox.innerHTML = '';
+  try{
+    new QRCode(qrBox,{text:url,width:190,height:190,colorDark:'#1a0f4a',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});
+  } catch(e){ qrBox.textContent='QR unavailable'; }
+
+  if(pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(dPoll, 2500);
+}
+
+async function dPoll(){
+  if(!sessionId) return;
+  try{
+    const res  = await sbFetch('GET',`picbeam_sessions?session_id=eq.${sessionId}&select=image_data,updated_at,phone_connected`);
+    const rows = await res.json();
+    if(!rows || !rows.length) return;
+    const row = rows[0];
+
+    // Device connected indicator
+    if(row.phone_connected && document.getElementById('d-dot').className==='dot waiting')
+      dSetStatus('connected','Device connected — ready');
+
+    if(!row.image_data) return;
+    if(row.updated_at === lastChecked) return;
+    lastChecked = row.updated_at;
+
+    // New image received!
+    dSetStatus('received','Image received!');
+    dShowImage(row.image_data,'phone','📱 From Phone');
+    dHistory.unshift(row.image_data);
+    dUpdateHistory();
+    showToast('📸 Image received from device!');
+
+    // Clear from server
+    await sbFetch('PATCH',`picbeam_sessions?session_id=eq.${sessionId}`,{image_data:null});
+    setTimeout(()=> dSetStatus('connected','Device connected — ready'), 3000);
+  } catch(e){}
+}
+
+function dSetStatus(state, text){
+  document.getElementById('d-dot').className   = 'dot '+state;
+  document.getElementById('d-status').textContent = text;
+}
+
+function dShowImage(dataUrl, source, label){
+  dCurrentData = dataUrl;
+  document.getElementById('d-drop').style.display = 'none';
+  document.getElementById('d-preview-area').style.display = 'flex';
+  document.getElementById('d-preview-img').src = dataUrl;
+
+  const tag = document.getElementById('d-src-tag');
+  tag.textContent = label || source;
+  tag.style.background = source==='phone'?'#052e16':'#1e1b3a';
+  tag.style.color       = source==='phone'?'#86efac':'#a78bfa';
+
+  const img = new Image();
+  img.onload = function(){ document.getElementById('d-img-size').textContent = `${this.width}×${this.height}`; };
+  img.src = dataUrl;
+  document.getElementById('d-img-name').textContent = source==='phone'?'phone-capture.jpg':'local-file.jpg';
+
+  document.getElementById('d-upload-panel').classList.add('flash');
+  setTimeout(()=> document.getElementById('d-upload-panel').classList.remove('flash'), 1600);
+}
+
+function dClearPreview(){
+  dCurrentData = null;
+  document.getElementById('d-preview-area').style.display = 'none';
+  document.getElementById('d-drop').style.display = 'block';
+  document.getElementById('d-prog-wrap').style.display = 'none';
+}
+
+function dDownload(){
+  if(!dCurrentData) return;
+  const a = document.createElement('a');
+  a.href = dCurrentData;
+  a.download = `picbeam-${Date.now()}.jpg`;
+  a.click();
+}
+
+function dCopyLink(){
+  const url = document.getElementById('d-link').textContent;
+  if(url==='—') return;
+  navigator.clipboard.writeText(url).then(()=> showToast('Link copied!')).catch(()=>{
+    // fallback
+    const ta = document.createElement('textarea');
+    ta.value = url; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    showToast('Link copied!');
+  });
+}
+
+function dUpdateHistory(){
+  const grid = document.getElementById('d-history-grid');
+  if(!dHistory.length){ grid.innerHTML='<div class="h-empty">No images yet</div>'; return; }
+  grid.innerHTML = dHistory.slice(0,16).map((d,i)=>
+    `<img class="h-thumb" src="${d}" onclick="dShowImage('${d}','history','📂 History')" title="Image ${i+1}">`
+  ).join('');
+}
+
+// Desktop sends/shows files (also pushes to Supabase so mobile receives)
+async function dHandleFiles(files){
+  if(!files || !files.length) return;
+  const arr = [...files].filter(f=> f.type.startsWith('image/'));
+  if(!arr.length){ showToast('⚠ No image files found'); return; }
+
+  const pw = document.getElementById('d-prog-wrap');
+  const pb = document.getElementById('d-prog-bar');
+  pw.style.display = 'block'; pb.style.width = '0%';
+
+  for(let i=0; i<arr.length; i++){
+    pb.style.width = '20%';
+    const raw   = await readFile(arr[i]);
+    pb.style.width = '50%';
+    const comp  = await compress(raw);
+    pb.style.width = '80%';
+
+    dShowImage(comp,'local','💻 Local');
+    dHistory.unshift(comp);
+    dUpdateHistory();
+
+    // Push to Supabase channel (connected mobile device will receive it)
+    if(sessionId){
+      try{
+        await sbFetch('PATCH',
+          `picbeam_sessions?session_id=eq.${sessionId}`,
+          {image_data:comp, updated_at:new Date().toISOString()}
+        );
+      } catch(e){}
+    }
+
+    pb.style.width = '100%';
+    await sleep(300);
+  }
+
+  pw.style.display = 'none'; pb.style.width = '0%';
+  showToast(arr.length>1 ? `✓ ${arr.length} images sent` : '✓ Image ready');
+}
+
+// Desktop drag & drop
+const dDrop = document.getElementById('d-drop');
+dDrop.addEventListener('dragover',  e=>{ e.preventDefault(); dDrop.classList.add('drag-over'); });
+dDrop.addEventListener('dragleave', e=>{ if(!dDrop.contains(e.relatedTarget)) dDrop.classList.remove('drag-over'); });
+dDrop.addEventListener('drop', async e=>{
+  e.preventDefault(); dDrop.classList.remove('drag-over');
+  const files = await extractImages(e.dataTransfer);
+  files.length ? dHandleFiles(files) : showToast('⚠ No image in drop');
+});
+document.getElementById('d-file-inp').addEventListener('change', e=> dHandleFiles(e.target.files));
+
+// ── MOBILE ───────────────────────────────────────────────
+async function mMarkConnected(){
+  try{
+    await sbFetch('PATCH',`picbeam_sessions?session_id=eq.${sessionId}`,{phone_connected:true});
+  } catch(e){}
+}
+
+function mSetStatus(state, text){
+  const dot = document.getElementById('m-dot');
+  const bar = document.getElementById('m-status-bar');
+  const lbl = document.getElementById('m-status-txt');
+  dot.className = 'dot '+state;
+  bar.className = 'm-status'+(state==='success'?' success':state==='error'?' error':state==='sending'?' sending':'');
+  lbl.textContent = text;
+}
+
+async function mHandleFiles(files){
+  if(!files || !files.length) return;
+  if(!sessionId){ showToast('⚠ No session — scan QR from desktop'); return; }
+  const arr = [...files].filter(f=> f.type.startsWith('image/'));
+  if(!arr.length){ showToast('⚠ No image files'); return; }
+  for(let i=0; i<arr.length; i++) await mSendFile(arr[i], i+1, arr.length);
+}
+
+async function mSendFile(file, idx, total){
+  mSetStatus('sending', total>1 ? `Sending ${idx}/${total}…` : 'Sending…');
+
+  const pw = document.getElementById('m-prog-wrap');
+  const pb = document.getElementById('m-prog-bar');
+  pw.style.display = 'block'; pb.style.width = '0%';
+
+  try{
+    const raw  = await readFile(file);
+    pb.style.width = '40%';
+    const comp = await compress(raw, 1200, 0.82);
+    pb.style.width = '75%';
+
+    await sbFetch('PATCH',
+      `picbeam_sessions?session_id=eq.${sessionId}`,
+      {image_data:comp, updated_at:new Date().toISOString()}
+    );
+
+    pb.style.width = '100%';
+    await sleep(280);
+    pw.style.display = 'none'; pb.style.width = '0%';
+
+    document.getElementById('m-preview-img').src = comp;
+    document.getElementById('m-preview-wrap').style.display = 'flex';
+
+    mAddThumb(comp);
+    mSentCount++;
+
+    const done = total>1 && idx<total ? `Sent ${idx}/${total} — next…` : '✓ Sent to desktop!';
+    mSetStatus('success', done);
+    if(idx===total){ showToast('✓ All images sent!'); setTimeout(()=> mSetStatus('waiting','Ready — send another?'), 3500); }
+
+  } catch(e){
+    pw.style.display='none';
+    mSetStatus('error','Failed — check connection');
+    setTimeout(()=> mSetStatus('waiting','Ready to send'), 3000);
+  }
+}
+
+function mAddThumb(src){
+  const sec   = document.getElementById('m-sent-sec');
+  const grid  = document.getElementById('m-sent-grid');
+  const div   = document.getElementById('m-divider');
+  sec.style.display = 'block'; div.style.display = 'block';
+  const img = document.createElement('img');
+  img.src = src; img.className = 's-thumb';
+  grid.insertBefore(img, grid.firstChild);
+  while(grid.children.length > 8) grid.removeChild(grid.lastChild);
+  document.getElementById('m-sent-cnt').textContent =
+    `${mSentCount+1} image${mSentCount+1!==1?'s':''} sent this session`;
+}
+
+// Mobile drop zone
+const mDrop = document.getElementById('m-drop');
+mDrop.addEventListener('dragover',  e=>{ e.preventDefault(); mDrop.classList.add('drag-over'); });
+mDrop.addEventListener('dragleave', e=>{ if(!mDrop.contains(e.relatedTarget)) mDrop.classList.remove('drag-over'); });
+mDrop.addEventListener('drop', async e=>{
+  e.preventDefault(); mDrop.classList.remove('drag-over');
+  const files = await extractImages(e.dataTransfer);
+  files.length ? mHandleFiles(files) : showToast('⚠ No image in drop');
+});
+
+document.getElementById('m-browse') .addEventListener('change', e=> mHandleFiles(e.target.files));
+document.getElementById('m-cam')    .addEventListener('change', e=> mHandleFiles(e.target.files));
+document.getElementById('m-gallery').addEventListener('change', e=> mHandleFiles(e.target.files));
+
+// ── GLOBAL: PASTE + FULL-PAGE DROP ───────────────────────
+document.addEventListener('paste', async e=>{
+  const dt = e.clipboardData; if(!dt) return;
+  const files = await extractImages(dt);
+  if(!files.length) return;
+  pasteFlash();
+  showToast('📋 Pasting image…');
+  currentMode === 'desktop' ? dHandleFiles(files) : mHandleFiles(files);
+});
+
+document.addEventListener('dragover', e=> e.preventDefault());
+document.addEventListener('drop', async e=>{
+  e.preventDefault();
+  // skip if the drop landed directly on a drop zone (already handled)
+  if(document.getElementById('d-drop').contains(e.target)) return;
+  if(document.getElementById('m-drop').contains(e.target)) return;
+  const files = await extractImages(e.dataTransfer);
+  if(!files.length) return;
+  currentMode === 'desktop' ? dHandleFiles(files) : mHandleFiles(files);
+});
+</script>
+</body>
+</html>
