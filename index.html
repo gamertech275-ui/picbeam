@@ -5,10 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>PicBeam</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
-<link rel="manifest" href="/site.webmanifest">
 <style>
 /* ═══════════════════════════════════════════════════════
    TOKENS
@@ -145,18 +141,21 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 
 .m-btn-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%}
 
-.m-cam{padding:15px 0;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);
+/* FIX: Camera and gallery buttons — use label-style wrappers, not buttons with nested inputs */
+.m-cam-btn{
+  padding:15px 0;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);
   font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;
-  gap:8px;transition:opacity .2s,transform .1s;position:relative;overflow:hidden}
-.m-cam:active{transform:scale(.97);opacity:.9}
-.m-cam input{position:absolute;inset:0;opacity:0;cursor:pointer;font-size:0}
+  gap:8px;transition:opacity .2s,transform .1s;width:100%;
+}
+.m-cam-btn:active{transform:scale(.97);opacity:.9}
 
-.m-gal{padding:15px 0;background:transparent;color:var(--text);border:1px solid var(--border);
+.m-gal-btn{
+  padding:15px 0;background:transparent;color:var(--text);border:1px solid var(--border);
   border-radius:var(--radius);font-size:14px;font-weight:500;cursor:pointer;
   display:flex;align-items:center;justify-content:center;gap:8px;
-  position:relative;overflow:hidden;transition:border-color .2s,background .2s}
-.m-gal:hover{border-color:var(--accent2);background:#1a1a2e}
-.m-gal input{position:absolute;inset:0;opacity:0;cursor:pointer}
+  transition:border-color .2s,background .2s;width:100%;
+}
+.m-gal-btn:hover{border-color:var(--accent2);background:#1a1a2e}
 
 .paste-hint{width:100%;text-align:center;font-size:12px;color:var(--muted);margin-top:-4px}
 .paste-hint kbd{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;font-family:monospace;color:var(--accent2)}
@@ -167,6 +166,15 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 #m-preview-wrap{display:none;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:420px;margin-bottom:20px}
 #m-preview-lbl{align-self:flex-start;font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted)}
 #m-preview-img{width:100%;max-height:300px;object-fit:contain;border-radius:10px;border:1px solid var(--border);background:#111}
+
+/* Mobile received panel (images from desktop) */
+#m-received-sec{width:100%;max-width:420px;display:none;flex-direction:column;gap:10px;margin-bottom:20px}
+.m-recv-lbl{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted)}
+#m-received-img{width:100%;max-height:300px;object-fit:contain;border-radius:10px;border:1px solid var(--success);background:#111}
+.m-recv-meta{font-size:12px;color:var(--muted)}
+.m-recv-download{padding:10px;background:var(--success);color:#fff;border:none;border-radius:8px;
+  font-size:13px;font-weight:500;cursor:pointer;width:100%;transition:opacity .2s}
+.m-recv-download:hover{opacity:.85}
 
 #m-sent-sec{width:100%;max-width:420px;display:none}
 .m-sent-lbl{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:12px}
@@ -223,9 +231,9 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
       </div>
       <div class="link-row">
         <a class="link-a" id="d-link" href="#" target="_blank" rel="noopener">—</a>
-        <button class="copy-btn" onclick="dCopyLink()">Copy</button>
+        <button class="copy-btn" id="d-copy-btn">Copy</button>
       </div>
-      <button class="btn secondary" onclick="newSession()">↻ New Session</button>
+      <button class="btn secondary" id="d-new-session-btn">↻ New Session</button>
     </div>
 
     <!-- Upload / preview panel -->
@@ -253,8 +261,8 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
           <span>📁 <span id="d-img-name">—</span></span>
           <span class="source-tag" id="d-src-tag">local</span>
         </div>
-        <button class="btn" onclick="dDownload()">⬇ Download</button>
-        <button class="btn secondary" onclick="dClearPreview()">✕ Clear</button>
+        <button class="btn" id="d-download-btn">⬇ Download</button>
+        <button class="btn secondary" id="d-clear-btn">✕ Clear</button>
       </div>
     </div>
   </div>
@@ -278,6 +286,14 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
     <span id="m-status-txt">Ready to send</span>
   </div>
 
+  <!-- FIX: Received from desktop section -->
+  <div id="m-received-sec">
+    <div class="m-recv-lbl">📥 Received from Desktop</div>
+    <img id="m-received-img" src="" alt="Received">
+    <div class="m-recv-meta" id="m-recv-meta">—</div>
+    <button class="m-recv-download" id="m-recv-dl-btn">⬇ Save Image</button>
+  </div>
+
   <div class="m-upload">
     <div class="m-drop" id="m-drop">
       <div class="m-drop-icon">📂</div>
@@ -288,20 +304,23 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
         <span class="chip">Browse Files</span>
         <span class="chip">Ctrl+V Paste</span>
       </div>
-      <input type="file" accept="image/*" multiple id="m-browse">
+      <!-- FIX: separate input, not inside the drop zone button -->
+      <input type="file" accept="image/*" multiple id="m-browse-inp">
     </div>
 
     <div class="or-div">or use camera</div>
 
     <div class="m-btn-row">
-      <button class="m-cam">
+      <!-- FIX: Camera button — uses label + hidden input (no nested input inside button) -->
+      <label class="m-cam-btn" for="m-cam-inp">
         <span>📸</span><span>Camera</span>
-        <input type="file" accept="image/*" capture="environment" id="m-cam">
-      </button>
-      <button class="m-gal">
+      </label>
+      <input type="file" accept="image/*" capture="environment" id="m-cam-inp" style="display:none">
+
+      <label class="m-gal-btn" for="m-gallery-inp">
         <span>🖼</span><span>Gallery</span>
-        <input type="file" accept="image/*" multiple id="m-gallery">
-      </button>
+      </label>
+      <input type="file" accept="image/*" multiple id="m-gallery-inp" style="display:none">
     </div>
 
     <div class="paste-hint"><kbd>Ctrl</kbd>+<kbd>V</kbd> or <kbd>⌘V</kbd> to paste a screenshot</div>
@@ -339,39 +358,47 @@ const URL_SESSION  = urlParams.get('session'); // present when opened via QR lin
 
 let sessionId      = URL_SESSION || '';
 let pollInterval   = null;
-let lastChecked    = null;
+let dLastChecked   = null;  // desktop: track last image_data timestamp
+let mLastChecked   = null;  // mobile: track last d2m_data timestamp
 let dHistory       = [];
 let dCurrentData   = null;
 let mSentCount     = 0;
+let mReceivedData  = null;
 let currentMode    = '';
 
 // ── LAYOUT SWITCHER ──────────────────────────────────────
 function getMode(){ return window.innerWidth >= BREAKPOINT ? 'desktop' : 'mobile'; }
 
 function applyMode(mode){
-  if(mode === currentMode) return;
+  // FIX: allow forced re-application when mode hasn't changed (e.g. after resize)
+  const modeChanged = mode !== currentMode;
   currentMode = mode;
 
   document.getElementById('desktop-ui').style.display = 'none';
   document.getElementById('mobile-ui') .style.display = 'none';
   document.getElementById('no-session').style.display = 'none';
 
+  // Stop any existing poll
+  if(pollInterval){ clearInterval(pollInterval); pollInterval = null; }
+
   if(mode === 'desktop'){
     document.getElementById('desktop-ui').style.display = 'flex';
     if(!sessionId){
       newSession();
     } else {
-      // URL has a session: this desktop was linked; show session + start polling
       setupDesktopSession(sessionId);
     }
   } else {
     // Mobile
-    document.getElementById('mobile-ui').style.display = 'flex';
     if(!sessionId){
-      mSetStatus('error', 'No session — open PicBeam on desktop first');
+      // No session param — show the no-session screen
+      document.getElementById('no-session').style.display = 'flex';
     } else {
+      document.getElementById('mobile-ui').style.display = 'flex';
       document.getElementById('m-sid').textContent = sessionId;
       mMarkConnected();
+      // FIX: Start mobile polling to receive images from desktop
+      startMobilePoll();
     }
   }
 }
@@ -379,7 +406,11 @@ function applyMode(mode){
 let resizeTimer;
 window.addEventListener('resize', ()=>{
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(()=> applyMode(getMode()), 200);
+  resizeTimer = setTimeout(()=>{
+    const newMode = getMode();
+    // FIX: Always re-apply if mode changed (don't skip with currentMode guard inside applyMode)
+    if(newMode !== currentMode) applyMode(newMode);
+  }, 200);
 });
 
 (function init(){ applyMode(getMode()); })();
@@ -464,15 +495,17 @@ async function extractImages(dt){
 // ── DESKTOP ──────────────────────────────────────────────
 function newSession(){
   if(pollInterval) clearInterval(pollInterval);
-  sessionId   = genSid();
-  lastChecked = null;
-  dHistory    = [];
+  sessionId    = genSid();
+  dLastChecked = null;
+  dHistory     = [];
   dCurrentData = null;
   dUpdateHistory();
   dClearPreview();
   setupDesktopSession(sessionId);
-  // Register in Supabase
-  sbFetch('POST','picbeam_sessions',{session_id:sessionId,image_data:null,phone_connected:false}).catch(()=>{});
+  // FIX: Use upsert via POST with onConflict=ignore to avoid duplicate row errors
+  sbFetch('POST','picbeam_sessions?on_conflict=session_id',
+    {session_id:sessionId, image_data:null, d2m_data:null, phone_connected:false}
+  ).catch(()=>{});
   showToast('New session started — scan QR or share link');
 }
 
@@ -497,6 +530,7 @@ function setupDesktopSession(sid){
   pollInterval = setInterval(dPoll, 2500);
 }
 
+// FIX: Desktop polls both image_data (from mobile→desktop) AND d2m_data (desktop→mobile confirmation)
 async function dPoll(){
   if(!sessionId) return;
   try{
@@ -506,14 +540,15 @@ async function dPoll(){
     const row = rows[0];
 
     // Device connected indicator
-    if(row.phone_connected && document.getElementById('d-dot').className==='dot waiting')
+    const dot = document.getElementById('d-dot');
+    if(row.phone_connected && (dot.className === 'dot waiting' || dot.className === 'dot waiting'))
       dSetStatus('connected','Device connected — ready');
 
     if(!row.image_data) return;
-    if(row.updated_at === lastChecked) return;
-    lastChecked = row.updated_at;
+    if(row.updated_at === dLastChecked) return;
+    dLastChecked = row.updated_at;
 
-    // New image received!
+    // New image received from phone!
     dSetStatus('received','Image received!');
     dShowImage(row.image_data,'phone','📱 From Phone');
     dHistory.unshift(row.image_data);
@@ -570,7 +605,6 @@ function dCopyLink(){
   const url = document.getElementById('d-link').textContent;
   if(url==='—') return;
   navigator.clipboard.writeText(url).then(()=> showToast('Link copied!')).catch(()=>{
-    // fallback
     const ta = document.createElement('textarea');
     ta.value = url; document.body.appendChild(ta); ta.select();
     document.execCommand('copy'); document.body.removeChild(ta);
@@ -578,15 +612,29 @@ function dCopyLink(){
   });
 }
 
+// FIX: History uses data- attributes and event delegation instead of inline onclick with base64
 function dUpdateHistory(){
   const grid = document.getElementById('d-history-grid');
   if(!dHistory.length){ grid.innerHTML='<div class="h-empty">No images yet</div>'; return; }
-  grid.innerHTML = dHistory.slice(0,16).map((d,i)=>
-    `<img class="h-thumb" src="${d}" onclick="dShowImage('${d}','history','📂 History')" title="Image ${i+1}">`
-  ).join('');
+  grid.innerHTML = '';
+  dHistory.slice(0,16).forEach((d, i)=>{
+    const img = document.createElement('img');
+    img.className = 'h-thumb';
+    img.src = d;
+    img.title = `Image ${i+1}`;
+    img.dataset.idx = i;
+    grid.appendChild(img);
+  });
 }
 
-// Desktop sends/shows files (also pushes to Supabase so mobile receives)
+document.getElementById('d-history-grid').addEventListener('click', e=>{
+  const th = e.target.closest('.h-thumb');
+  if(!th) return;
+  const idx = parseInt(th.dataset.idx, 10);
+  if(!isNaN(idx) && dHistory[idx]) dShowImage(dHistory[idx],'history','📂 History');
+});
+
+// Desktop handles files (local upload) and ALSO pushes to d2m_data so mobile can receive
 async function dHandleFiles(files){
   if(!files || !files.length) return;
   const arr = [...files].filter(f=> f.type.startsWith('image/'));
@@ -598,21 +646,21 @@ async function dHandleFiles(files){
 
   for(let i=0; i<arr.length; i++){
     pb.style.width = '20%';
-    const raw   = await readFile(arr[i]);
+    const raw  = await readFile(arr[i]);
     pb.style.width = '50%';
-    const comp  = await compress(raw);
+    const comp = await compress(raw);
     pb.style.width = '80%';
 
     dShowImage(comp,'local','💻 Local');
     dHistory.unshift(comp);
     dUpdateHistory();
 
-    // Push to Supabase channel (connected mobile device will receive it)
+    // FIX: Push to d2m_data (desktop→mobile) so phone can receive it
     if(sessionId){
       try{
         await sbFetch('PATCH',
           `picbeam_sessions?session_id=eq.${sessionId}`,
-          {image_data:comp, updated_at:new Date().toISOString()}
+          {d2m_data:comp, d2m_updated_at:new Date().toISOString()}
         );
       } catch(e){}
     }
@@ -636,10 +684,21 @@ dDrop.addEventListener('drop', async e=>{
 });
 document.getElementById('d-file-inp').addEventListener('change', e=> dHandleFiles(e.target.files));
 
+// Button listeners (avoid inline onclick to prevent breakage on resize)
+document.getElementById('d-copy-btn').addEventListener('click', dCopyLink);
+document.getElementById('d-new-session-btn').addEventListener('click', newSession);
+document.getElementById('d-download-btn').addEventListener('click', dDownload);
+document.getElementById('d-clear-btn').addEventListener('click', dClearPreview);
+
 // ── MOBILE ───────────────────────────────────────────────
 async function mMarkConnected(){
   try{
-    await sbFetch('PATCH',`picbeam_sessions?session_id=eq.${sessionId}`,{phone_connected:true});
+    // FIX: Upsert-safe PATCH; ensure row exists first via GET
+    const res = await sbFetch('GET',`picbeam_sessions?session_id=eq.${sessionId}&select=session_id`);
+    const rows = await res.json();
+    if(rows && rows.length){
+      await sbFetch('PATCH',`picbeam_sessions?session_id=eq.${sessionId}`,{phone_connected:true});
+    }
   } catch(e){}
 }
 
@@ -647,10 +706,60 @@ function mSetStatus(state, text){
   const dot = document.getElementById('m-dot');
   const bar = document.getElementById('m-status-bar');
   const lbl = document.getElementById('m-status-txt');
+  if(!dot || !bar || !lbl) return;
   dot.className = 'dot '+state;
   bar.className = 'm-status'+(state==='success'?' success':state==='error'?' error':state==='sending'?' sending':'');
   lbl.textContent = text;
 }
+
+// FIX: Mobile polls for d2m_data (images sent FROM desktop)
+function startMobilePoll(){
+  if(pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(mPoll, 2500);
+}
+
+async function mPoll(){
+  if(!sessionId || currentMode !== 'mobile') return;
+  try{
+    const res  = await sbFetch('GET',`picbeam_sessions?session_id=eq.${sessionId}&select=d2m_data,d2m_updated_at`);
+    const rows = await res.json();
+    if(!rows || !rows.length) return;
+    const row = rows[0];
+
+    if(!row.d2m_data) return;
+    if(row.d2m_updated_at === mLastChecked) return;
+    mLastChecked = row.d2m_updated_at;
+
+    // New image received from desktop!
+    mShowReceived(row.d2m_data);
+    showToast('📥 Image received from desktop!');
+
+    // Clear from server
+    await sbFetch('PATCH',`picbeam_sessions?session_id=eq.${sessionId}`,{d2m_data:null});
+  } catch(e){}
+}
+
+function mShowReceived(dataUrl){
+  mReceivedData = dataUrl;
+  const sec = document.getElementById('m-received-sec');
+  sec.style.display = 'flex';
+  const img = new Image();
+  img.onload = function(){
+    document.getElementById('m-received-img').src = dataUrl;
+    document.getElementById('m-recv-meta').textContent = `${this.width}×${this.height} · from desktop`;
+    sec.classList.add('flash');
+    setTimeout(()=> sec.classList.remove('flash'), 1600);
+  };
+  img.src = dataUrl;
+}
+
+document.getElementById('m-recv-dl-btn').addEventListener('click', ()=>{
+  if(!mReceivedData) return;
+  const a = document.createElement('a');
+  a.href = mReceivedData;
+  a.download = `picbeam-desktop-${Date.now()}.jpg`;
+  a.click();
+});
 
 async function mHandleFiles(files){
   if(!files || !files.length) return;
@@ -685,8 +794,9 @@ async function mSendFile(file, idx, total){
     document.getElementById('m-preview-img').src = comp;
     document.getElementById('m-preview-wrap').style.display = 'flex';
 
-    mAddThumb(comp);
+    // FIX: increment count BEFORE calling mAddThumb so label is correct
     mSentCount++;
+    mAddThumb(comp);
 
     const done = total>1 && idx<total ? `Sent ${idx}/${total} — next…` : '✓ Sent to desktop!';
     mSetStatus('success', done);
@@ -700,16 +810,17 @@ async function mSendFile(file, idx, total){
 }
 
 function mAddThumb(src){
-  const sec   = document.getElementById('m-sent-sec');
-  const grid  = document.getElementById('m-sent-grid');
-  const div   = document.getElementById('m-divider');
+  const sec  = document.getElementById('m-sent-sec');
+  const grid = document.getElementById('m-sent-grid');
+  const div  = document.getElementById('m-divider');
   sec.style.display = 'block'; div.style.display = 'block';
   const img = document.createElement('img');
   img.src = src; img.className = 's-thumb';
   grid.insertBefore(img, grid.firstChild);
   while(grid.children.length > 8) grid.removeChild(grid.lastChild);
+  // FIX: mSentCount already incremented before this call
   document.getElementById('m-sent-cnt').textContent =
-    `${mSentCount+1} image${mSentCount+1!==1?'s':''} sent this session`;
+    `${mSentCount} image${mSentCount!==1?'s':''} sent this session`;
 }
 
 // Mobile drop zone
@@ -722,9 +833,10 @@ mDrop.addEventListener('drop', async e=>{
   files.length ? mHandleFiles(files) : showToast('⚠ No image in drop');
 });
 
-document.getElementById('m-browse') .addEventListener('change', e=> mHandleFiles(e.target.files));
-document.getElementById('m-cam')    .addEventListener('change', e=> mHandleFiles(e.target.files));
-document.getElementById('m-gallery').addEventListener('change', e=> mHandleFiles(e.target.files));
+// FIX: Use corrected input IDs (m-browse-inp, m-cam-inp, m-gallery-inp)
+document.getElementById('m-browse-inp') .addEventListener('change', e=> mHandleFiles(e.target.files));
+document.getElementById('m-cam-inp')    .addEventListener('change', e=> mHandleFiles(e.target.files));
+document.getElementById('m-gallery-inp').addEventListener('change', e=> mHandleFiles(e.target.files));
 
 // ── GLOBAL: PASTE + FULL-PAGE DROP ───────────────────────
 document.addEventListener('paste', async e=>{
@@ -739,7 +851,6 @@ document.addEventListener('paste', async e=>{
 document.addEventListener('dragover', e=> e.preventDefault());
 document.addEventListener('drop', async e=>{
   e.preventDefault();
-  // skip if the drop landed directly on a drop zone (already handled)
   if(document.getElementById('d-drop').contains(e.target)) return;
   if(document.getElementById('m-drop').contains(e.target)) return;
   const files = await extractImages(e.dataTransfer);
