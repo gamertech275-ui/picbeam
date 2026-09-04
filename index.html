@@ -304,24 +304,54 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
      primary key (room_id, peer_id)
    );
 
+   create table if not exists picbeam_signals (
+     id bigserial primary key,
+     room_id text not null,
+     from_peer text not null,
+     to_peer text not null,
+     kind text not null,          -- 'offer' | 'answer' | 'ice'
+     payload jsonb not null,
+     created_at timestamptz default now()
+   );
+
    alter table picbeam_rooms enable row level security;
    alter table picbeam_files enable row level security;
    alter table picbeam_presence enable row level security;
+   alter table picbeam_signals enable row level security;
    create policy "public rw rooms"     on picbeam_rooms     for all using (true) with check (true);
    create policy "public rw files"     on picbeam_files     for all using (true) with check (true);
    create policy "public rw presence"  on picbeam_presence  for all using (true) with check (true);
+   create policy "public rw signals"   on picbeam_signals   for all using (true) with check (true);
+   create index if not exists picbeam_signals_room_to_idx on picbeam_signals (room_id, to_peer, id);
 
-   -- storage bucket for the actual file bytes (handles large videos etc.)
+   -- storage bucket — now only a FALLBACK relay for when a direct
+   -- peer-to-peer link can't be established (see WEBRTC P2P below).
    insert into storage.buckets (id, name, public) values ('picbeam','picbeam', true)
    on conflict (id) do nothing;
 
    create policy "public upload" on storage.objects for insert to public with check (bucket_id = 'picbeam');
    create policy "public read"   on storage.objects for select to public using (bucket_id = 'picbeam');
    create policy "public update" on storage.objects for update to public using (bucket_id = 'picbeam');
+   create policy "public delete" on storage.objects for delete to public using (bucket_id = 'picbeam');
 
    Note: Supabase's free tier caps individual file uploads (default 50MB,
    raisable in Dashboard → Storage → Configuration → max file size, up to
-   plan limits). Very large videos may need that raised.
+   plan limits). This only matters for files sent over the relay fallback —
+   direct P2P transfers never touch Supabase Storage and have no such cap.
+
+   ── WHY P2P ──
+   Sending a file through Supabase means upload-to-server then
+   download-from-server: two hops, twice the time, and a server-side size
+   cap. This version instead opens a direct WebRTC connection between the
+   two devices (using public STUN servers, no TURN relay) and streams the
+   file straight from one device to the other in chunks, with backpressure
+   so it never floods memory. Supabase is only used for the brief
+   handshake (a few small signaling messages) and as an automatic
+   fallback for the (uncommon) networks where a direct connection can't
+   be established — e.g. some carrier/corporate NATs. Real-world speed on
+   a direct link still depends on both devices' actual network — on the
+   same Wi-Fi it can be very fast, over the open internet it's bounded by
+   whatever your upload/download speeds actually are.
 
    ── STORAGE CLEANUP ──
    The app deletes a session's files automatically when the last device
@@ -352,10 +382,22 @@ const SELF_URL     = location.origin + location.pathname;
 let roomId       = '';
 let myId         = genId();
 let lastFileId   = 0;
+let lastSignalId = 0;
 let heartbeatTmr = null;
 let pollTmr      = null;
+let signalTmr    = null;
 let qrScanner    = null;
 let peerSeen     = false;
+const presencePeers = new Set();   // peer_ids currently online in the room
+const rtcPeers      = new Map();   // peer_id -> { pc, dc, connecting }
+const incoming      = new Map();   // transfer id -> { name, type, size, chunks, received, from }
+
+const ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
+];
+const P2P_CHUNK = 16 * 1024;          // per-message chunk size
+const P2P_HIGH_WATER = 1 * 1024 * 1024;   // pause sending above this
+const P2P_LOW_WATER  = 256 * 1024;        // resume sending below this
 
 const urlParams   = new URLSearchParams(location.search);
 const URL_ROOM    = (urlParams.get('room') || '').toUpperCase().trim();
@@ -382,6 +424,14 @@ async function sbFetch(method, path, body, extraHeaders){
     throw new Error(`Supabase ${res.status}: ${t}`);
   }
   return res;
+}
+
+async function sendSignal(toPeer, kind, payload){
+  try{
+    await sbFetch('POST', 'picbeam_signals',
+      {room_id:roomId, from_peer:myId, to_peer:toPeer, kind, payload},
+      {'Prefer':'return=minimal'});
+  }catch(e){}
 }
 
 function encodePath(path){ return path.split('/').map(encodeURIComponent).join('/'); }
@@ -494,7 +544,8 @@ async function joinRoom(code){
 }
 
 function enterRoom(){
-  lastFileId = 0; peerSeen = false;
+  lastFileId = 0; lastSignalId = 0; peerSeen = false;
+  presencePeers.clear(); rtcPeers.clear(); incoming.clear();
   document.getElementById('room-code').textContent = roomId;
   const url = `${SELF_URL}?room=${roomId}`;
   const la = document.getElementById('room-link');
@@ -549,6 +600,7 @@ async function deleteRoomFiles(targetRoomId){
     }
     await sbFetch('DELETE', `picbeam_files?room_id=eq.${targetRoomId}`);
     await sbFetch('DELETE', `picbeam_presence?room_id=eq.${targetRoomId}`);
+    await sbFetch('DELETE', `picbeam_signals?room_id=eq.${targetRoomId}`);
     await sbFetch('DELETE', `picbeam_rooms?room_id=eq.${targetRoomId}`);
     return true;
   }catch(e){ return false; }
@@ -590,12 +642,17 @@ function startLoops(){
   stopLoops();
   heartbeat();
   pollOnce();
+  pollSignals();
   heartbeatTmr = setInterval(heartbeat, 5000);
   pollTmr      = setInterval(pollOnce, 3000);
+  signalTmr    = setInterval(pollSignals, 800);   // fast — this is only the WebRTC handshake
 }
 function stopLoops(){
   if(heartbeatTmr) clearInterval(heartbeatTmr); heartbeatTmr=null;
   if(pollTmr) clearInterval(pollTmr); pollTmr=null;
+  if(signalTmr) clearInterval(signalTmr); signalTmr=null;
+  for(const peerId of [...rtcPeers.keys()]) teardownPeer(peerId);
+  presencePeers.clear();
 }
 
 async function heartbeat(){
@@ -612,10 +669,22 @@ async function pollOnce(){
   try{
     const since = new Date(Date.now()-15000).toISOString();
     const pres = await (await sbFetch('GET', `picbeam_presence?room_id=eq.${roomId}&peer_id=neq.${myId}&last_seen=gt.${since}&select=peer_id`)).json();
-    const connected = pres && pres.length > 0;
-    if(connected && !peerSeen){ peerSeen = true; setRoomStatus('connected', pres.length>1? `${pres.length} peers connected`: 'Peer connected — ready'); showToast('🔗 Peer connected'); }
-    else if(connected){ setRoomStatus('connected', pres.length>1? `${pres.length} peers connected`: 'Peer connected — ready'); }
-    else if(!connected && peerSeen){ peerSeen=false; setRoomStatus('waiting','Peer disconnected — waiting…'); }
+    const nowOnline = new Set((pres||[]).map(p=> p.peer_id));
+
+    // newly online — kick off (or wait for) a direct WebRTC connection
+    for(const pid of nowOnline){
+      if(!presencePeers.has(pid)){
+        presencePeers.add(pid);
+        if(myId < pid) connectToPeer(pid, true);   // lower id initiates, avoids both sides racing
+        showToast('🔗 Peer connected');
+      }
+    }
+    // gone offline — drop their connection
+    for(const pid of [...presencePeers]){
+      if(!nowOnline.has(pid)){ presencePeers.delete(pid); teardownPeer(pid); }
+    }
+    peerSeen = presencePeers.size > 0;
+    refreshRoomStatus();
   }catch(e){}
 
   try{
@@ -637,6 +706,166 @@ async function loadHistory(){
   }catch(e){}
 }
 
+// ── WEBRTC P2P (direct device-to-device transfer) ────────
+// Signaling (offer/answer/ICE) still goes through Supabase — it's tiny,
+// occasional text — but the actual file bytes never touch it. Whichever
+// peer_id sorts first initiates, so both sides don't race to connect.
+function getPc(peerId){
+  let entry = rtcPeers.get(peerId);
+  if(entry) return entry;
+  entry = { pc:null, dc:null, connecting:false };
+  rtcPeers.set(peerId, entry);
+  return entry;
+}
+
+function connectToPeer(peerId, isInitiator){
+  const entry = getPc(peerId);
+  if(entry.pc || entry.connecting) return;
+  entry.connecting = true;
+
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  entry.pc = pc;
+
+  pc.onicecandidate = e=>{
+    if(e.candidate) sendSignal(peerId, 'ice', e.candidate.toJSON());
+  };
+  pc.onconnectionstatechange = ()=>{
+    if(['failed','closed','disconnected'].includes(pc.connectionState)){
+      teardownPeer(peerId);
+    }
+  };
+
+  if(isInitiator){
+    const dc = pc.createDataChannel('file', { ordered:true });
+    setupDataChannel(peerId, dc);
+    pc.createOffer().then(offer=>{
+      pc.setLocalDescription(offer);
+      sendSignal(peerId, 'offer', { sdp: offer.sdp, type: offer.type });
+    });
+  } else {
+    pc.ondatachannel = e=> setupDataChannel(peerId, e.channel);
+  }
+}
+
+function setupDataChannel(peerId, dc){
+  dc.binaryType = 'arraybuffer';
+  const entry = getPc(peerId);
+  entry.dc = dc;
+  dc.onopen = ()=>{
+    entry.connecting = false;
+    showToast('⚡ Direct link connected — full speed');
+    refreshRoomStatus();
+  };
+  dc.onclose = ()=> refreshRoomStatus();
+  dc.onmessage = e=> handleP2PMessage(peerId, e.data);
+}
+
+function teardownPeer(peerId){
+  const entry = rtcPeers.get(peerId);
+  if(!entry) return;
+  try{ entry.dc && entry.dc.close(); }catch(e){}
+  try{ entry.pc && entry.pc.close(); }catch(e){}
+  rtcPeers.delete(peerId);
+  refreshRoomStatus();
+}
+
+async function pollSignals(){
+  if(!roomId) return;
+  try{
+    const rows = await (await sbFetch('GET',
+      `picbeam_signals?room_id=eq.${roomId}&to_peer=eq.${myId}&id=gt.${lastSignalId}&order=id.asc`)).json();
+    if(!rows || !rows.length) return;
+    for(const row of rows){
+      lastSignalId = Math.max(lastSignalId, row.id);
+      const from = row.from_peer;
+      if(row.kind === 'offer'){
+        connectToPeer(from, false);
+        const entry = getPc(from);
+        await entry.pc.setRemoteDescription(new RTCSessionDescription(row.payload));
+        const answer = await entry.pc.createAnswer();
+        await entry.pc.setLocalDescription(answer);
+        sendSignal(from, 'answer', { sdp: answer.sdp, type: answer.type });
+      } else if(row.kind === 'answer'){
+        const entry = rtcPeers.get(from);
+        if(entry && entry.pc) await entry.pc.setRemoteDescription(new RTCSessionDescription(row.payload));
+      } else if(row.kind === 'ice'){
+        const entry = rtcPeers.get(from);
+        if(entry && entry.pc){ try{ await entry.pc.addIceCandidate(row.payload); }catch(e){} }
+      }
+    }
+  }catch(e){}
+}
+
+function isP2PReady(peerId){
+  const entry = rtcPeers.get(peerId);
+  return !!(entry && entry.dc && entry.dc.readyState === 'open');
+}
+function allPeersP2PReady(){
+  if(!presencePeers.size) return false;
+  for(const pid of presencePeers) if(!isP2PReady(pid)) return false;
+  return true;
+}
+function refreshRoomStatus(){
+  if(!roomId) return;
+  if(!presencePeers.size){ setRoomStatus('waiting','Waiting for someone to join…'); return; }
+  const label = presencePeers.size>1 ? `${presencePeers.size} peers connected` : 'Peer connected';
+  setRoomStatus('connected', allPeersP2PReady() ? `${label} — ⚡ direct link` : `${label} — via relay`);
+}
+
+// Send a File directly over an open data channel, respecting backpressure
+// so a multi-GB file can't blow up either side's memory buffer.
+function sendFileP2P(dc, file, onProgress){
+  return new Promise(async (resolve, reject)=>{
+    try{
+      dc.bufferedAmountLowThreshold = P2P_LOW_WATER;
+      const id = genId();
+      dc.send(JSON.stringify({ type:'meta', id, name:file.name, size:file.size, mime:file.type || 'application/octet-stream' }));
+      let offset = 0;
+      while(offset < file.size){
+        if(dc.readyState !== 'open') throw new Error('channel closed mid-transfer');
+        if(dc.bufferedAmount > P2P_HIGH_WATER){
+          await new Promise(res=> dc.addEventListener('bufferedamountlow', res, {once:true}));
+        }
+        const slice = file.slice(offset, offset + P2P_CHUNK);
+        const buf = await slice.arrayBuffer();
+        dc.send(buf);
+        offset += buf.byteLength;
+        onProgress(offset / file.size);
+      }
+      dc.send(JSON.stringify({ type:'end', id }));
+      resolve();
+    }catch(err){ reject(err); }
+  });
+}
+
+function handleP2PMessage(peerId, data){
+  if(typeof data === 'string'){
+    let msg; try{ msg = JSON.parse(data); }catch(e){ return; }
+    if(msg.type === 'meta'){
+      incoming.set(msg.id, { name:msg.name, type:msg.mime, size:msg.size, chunks:[], received:0, from:peerId,
+        pend: addPendingCard({name:msg.name, size:msg.size, type:msg.mime}, 'peer') });
+    } else if(msg.type === 'end'){
+      const t = incoming.get(msg.id);
+      if(!t) return;
+      const blob = new Blob(t.chunks, { type: t.type });
+      const url = URL.createObjectURL(blob);
+      t.pend.card.remove();
+      addFeedCard({ file_name:t.name, file_type:t.type, file_size:t.size, blob_url:url, via:'p2p', created_at:new Date().toISOString() }, 'peer');
+      showToast('📥 ' + t.name + ' received — ⚡ direct');
+      incoming.delete(msg.id);
+    }
+  } else {
+    // find the most recent in-progress transfer from this peer (single
+    // channel is ordered, so chunks always belong to the newest 'meta')
+    let target = null;
+    for(const t of incoming.values()) if(t.from === peerId) target = t;
+    if(!target) return;
+    target.chunks.push(data);
+    target.received += data.byteLength || data.size || 0;
+    if(target.pend) target.pend.pb.style.width = Math.min(100, Math.round((target.received/target.size)*100)) + '%';
+  }
+}
+
 // ── FEED RENDERING ───────────────────────────────────────
 function addFeedCard(rec, who){
   const list = document.getElementById('feed-list');
@@ -647,11 +876,13 @@ function addFeedCard(rec, who){
 
   const top = document.createElement('div'); top.className='fc-top';
   const whoTag = document.createElement('span'); whoTag.className='fc-who '+who; whoTag.textContent = who==='you'?'YOU':'PEER';
+  const viaTag = document.createElement('span'); viaTag.style.color = rec.via==='p2p' ? 'var(--success)' : 'var(--muted)';
+  viaTag.textContent = rec.via==='p2p' ? '⚡ direct' : '☁ relay';
   const time = document.createElement('span'); time.className='fc-time'; time.textContent = fmtTime(rec.created_at || new Date().toISOString());
-  top.appendChild(whoTag); top.appendChild(time);
+  top.appendChild(whoTag); top.appendChild(viaTag); top.appendChild(time);
 
   const body = document.createElement('div'); body.className='fc-body';
-  const url = publicUrl(rec.storage_path);
+  const url = rec.blob_url || publicUrl(rec.storage_path);
   const type = rec.file_type || '';
 
   if(type.startsWith('image/')){
@@ -689,12 +920,15 @@ function addFeedCard(rec, who){
   card.classList.add('flash'); setTimeout(()=> card.classList.remove('flash'), 1400);
 }
 
-function addPendingCard(file){
+function addPendingCard(file, who){
+  who = who || 'you';
   const list = document.getElementById('feed-list');
   const empty = list.querySelector('.feed-empty'); if(empty) empty.remove();
-  const card = document.createElement('div'); card.className='file-card mine';
+  const card = document.createElement('div'); card.className='file-card'+(who==='you'?' mine':'');
   const top = document.createElement('div'); top.className='fc-top';
-  top.innerHTML = `<span class="fc-who you">YOU</span><span class="fc-time">sending…</span>`;
+  top.innerHTML = who==='you'
+    ? `<span class="fc-who you">YOU</span><span class="fc-time">sending…</span>`
+    : `<span class="fc-who peer">PEER</span><span class="fc-time">receiving…</span>`;
   const body = document.createElement('div'); body.className='fc-body';
   const icon = document.createElement('div'); icon.className='fc-icon'; icon.textContent = iconFor(file.type, file.name);
   const info = document.createElement('div'); info.className='fc-info';
@@ -713,31 +947,53 @@ async function handleFiles(files){
   if(!roomId){ showToast('⚠ Join or start a session first'); return; }
   const arr = [...files];
 
+  const useP2P = allPeersP2PReady();
+
   for(let i=0; i<arr.length; i++){
     const file = arr[i];
-    const pend = addPendingCard(file);
+    const pend = addPendingCard(file, 'you');
     setRoomStatus('sending', arr.length>1 ? `Sending ${i+1}/${arr.length}…` : 'Sending…');
     try{
-      const safeName = file.name.replace(/[^\w.\-]+/g,'_');
-      const path = `${roomId}/${Date.now()}_${Math.random().toString(36).slice(2,7)}_${safeName}`;
-      await uploadToStorage(file, path, frac=>{ pend.pb.style.width = Math.round(frac*100)+'%'; });
-
-      const rows = await (await sbFetch('POST', 'picbeam_files', {
-        room_id: roomId, sender_id: myId, file_name: file.name,
-        file_type: file.type || 'application/octet-stream', file_size: file.size, storage_path: path
-      })).json();
-      if(rows && rows[0]) lastFileId = Math.max(lastFileId, rows[0].id);
-
-      pend.card.remove();
-      addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, storage_path:path, created_at:new Date().toISOString()}, 'you');
+      if(useP2P){
+        // Fan out over every open direct channel — fast path, no server hop.
+        const openEntries = [...rtcPeers.values()].filter(e=> e.dc && e.dc.readyState==='open');
+        await Promise.all(openEntries.map(e=> sendFileP2P(e.dc, file, frac=>{ pend.pb.style.width = Math.round(frac*100)+'%'; })));
+        pend.card.remove();
+        addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, via:'p2p', created_at:new Date().toISOString()}, 'you');
+      } else {
+        await sendFileViaRelay(file, pend);
+      }
     }catch(e){
-      pend.card.querySelector('.fc-time').textContent = 'failed';
-      pend.pb.style.background = 'var(--danger)';
-      showToast('⚠ Failed to send ' + file.name + ' — try a smaller file or check connection');
+      // P2P failed mid-transfer (e.g. a peer dropped) — fall back to relay for this file.
+      try{
+        pend.pb.style.width = '0%';
+        await sendFileViaRelay(file, pend);
+      }catch(e2){
+        pend.card.querySelector('.fc-time').textContent = 'failed';
+        pend.pb.style.background = 'var(--danger)';
+        showToast('⚠ Failed to send ' + file.name + ' — check connection');
+      }
     }
   }
-  setRoomStatus(peerSeen ? 'connected' : 'waiting', peerSeen ? 'Peer connected — ready' : 'Waiting for someone to join…');
+  refreshRoomStatus();
   showToast(arr.length>1 ? `✓ ${arr.length} files sent` : '✓ File sent');
+}
+
+// Fallback path: uploads to Supabase Storage so any device in the room
+// can pick it up, used when a direct P2P link isn't available.
+async function sendFileViaRelay(file, pend){
+  const safeName = file.name.replace(/[^\w.\-]+/g,'_');
+  const path = `${roomId}/${Date.now()}_${Math.random().toString(36).slice(2,7)}_${safeName}`;
+  await uploadToStorage(file, path, frac=>{ pend.pb.style.width = Math.round(frac*100)+'%'; });
+
+  const rows = await (await sbFetch('POST', 'picbeam_files', {
+    room_id: roomId, sender_id: myId, file_name: file.name,
+    file_type: file.type || 'application/octet-stream', file_size: file.size, storage_path: path
+  })).json();
+  if(rows && rows[0]) lastFileId = Math.max(lastFileId, rows[0].id);
+
+  pend.card.remove();
+  addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, storage_path:path, via:'relay', created_at:new Date().toISOString()}, 'you');
 }
 
 // drop area
