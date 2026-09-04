@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PicBeam</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════════════════
+   TOKENS
+═══════════════════════════════════════════════════════ */
+:root{
+  --bg:#0f0f11; --surface:#1a1a1e; --surface2:#202024; --border:#2a2a30;
+  --accent:#6c63ff; --accent2:#a78bfa; --accent-dim:#1e1b3a;
+  --text:#f0effe; --muted:#8c8c96;
+  --success:#22c55e; --danger:#ef4444; --warn:#f59e0b;
+  --radius:14px; --radius-sm:9px;
+  --maxw:920px;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100dvh;
+  padding-bottom:env(safe-area-inset-bottom)}
+
+/* ── shared atoms ── */
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background .3s}
+.dot.waiting {background:var(--warn);  animation:pulse 1.5s ease-in-out infinite}
+.dot.sending {background:var(--accent);animation:pulse  .8s ease-in-out infinite}
+.dot.connected,.dot.success{background:var(--success);animation:none}
+.dot.received {background:var(--accent);animation:none}
+.dot.error    {background:var(--danger); animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+.btn{padding:13px 18px;background:var(--accent);color:#fff;border:none;border-radius:10px;
+  font-size:14px;font-weight:600;cursor:pointer;transition:opacity .2s,transform .1s;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn:hover{opacity:.88}.btn:active{transform:scale(.98)}.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.block{width:100%}
+.btn.secondary{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn.secondary:hover{background:var(--surface2)}
+.btn.ghost{background:transparent;color:var(--muted);border:none;padding:8px 10px}
+.btn.ghost:hover{color:var(--text)}
+.btn.sm{padding:9px 12px;font-size:13px;border-radius:8px}
+
+.logo{font-size:22px;font-weight:700;letter-spacing:-.5px}
+.logo span{color:var(--accent2)}
+
+.progress-bar-wrap{width:100%;height:5px;background:var(--border);border-radius:4px;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:4px;width:0%;transition:width .25s}
+
+#toast{
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(70px);
+  background:#222;color:var(--text);padding:10px 20px;border-radius:24px;
+  font-size:13px;border:1px solid var(--border);transition:transform .3s,opacity .3s;
+  opacity:0;max-width:88vw;text-align:center;z-index:9999;pointer-events:none;
+}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+
+#paste-flash{position:fixed;inset:0;background:rgba(108,99,255,.15);pointer-events:none;opacity:0;transition:opacity .2s;z-index:9998}
+#paste-flash.show{opacity:1}
+
+@keyframes flash-border{0%,100%{border-color:var(--border)}30%,70%{border-color:var(--success);box-shadow:0 0 0 3px #22c55e22}}
+.flash{animation:flash-border 1.4s ease}
+
+/* ═══════════════════════════════════════════════════════
+   LAYOUT SHELL — one responsive tree, no device forks
+═══════════════════════════════════════════════════════ */
+#app{max-width:var(--maxw);margin:0 auto;padding:20px 16px 56px;min-height:100dvh;display:flex;flex-direction:column}
+
+.topbar{display:flex;align-items:center;gap:10px;margin-bottom:22px}
+.topbar .tag{margin-left:auto;font-size:11px;color:var(--accent2);background:var(--accent-dim);
+  padding:4px 10px;border-radius:20px;border:1px solid #3d3880}
+
+/* ── landing ── */
+#screen-landing{display:flex;flex-direction:column;gap:22px;flex:1;justify-content:center;padding:24px 0}
+.landing-hero{text-align:left;max-width:520px}
+.landing-hero h1{font-size:clamp(24px,5vw,32px);line-height:1.25;font-weight:700;letter-spacing:-.5px}
+.landing-hero p{color:var(--muted);font-size:14px;margin-top:8px;line-height:1.6}
+.role-grid{display:grid;grid-template-columns:1fr;gap:14px;max-width:640px}
+@media(min-width:560px){.role-grid{grid-template-columns:1fr 1fr}}
+.role-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:24px;display:flex;flex-direction:column;gap:10px;cursor:pointer;text-align:left;
+  transition:border-color .2s,transform .1s}
+.role-card:hover{border-color:var(--accent2)}
+.role-card:active{transform:scale(.99)}
+.role-icon{font-size:26px}
+.role-card h3{font-size:16px;font-weight:600}
+.role-card p{font-size:13px;color:var(--muted);line-height:1.5}
+
+/* ── join screen ── */
+#screen-join{display:none;flex:1;flex-direction:column;justify-content:center;align-items:center;gap:18px;padding:24px 0}
+.join-box{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:26px;display:flex;flex-direction:column;gap:14px}
+.join-box h3{font-size:16px;font-weight:600}
+#join-code-inp{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:10px;
+  padding:14px;font-size:22px;letter-spacing:6px;text-align:center;color:var(--text);
+  font-family:monospace;text-transform:uppercase}
+#join-code-inp:focus{outline:none;border-color:var(--accent)}
+.join-or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px}
+.join-or::before,.join-or::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── scan overlay ── */
+#scan-overlay{display:none;position:fixed;inset:0;background:#000;z-index:10000;flex-direction:column}
+#scan-overlay.show{display:flex}
+.scan-top{display:flex;align-items:center;justify-content:space-between;padding:16px;color:#fff}
+#qr-reader{flex:1;width:100%}
+.scan-hint{color:#aaa;font-size:12px;text-align:center;padding:12px}
+
+/* ── room screen ── */
+#screen-room{display:none;flex-direction:column;gap:18px}
+
+.room-bar{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px 18px;display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.code-chip{font-family:monospace;font-size:16px;letter-spacing:3px;color:var(--accent2);
+  background:var(--accent-dim);padding:7px 14px;border-radius:20px;border:1px solid #3d3880;cursor:pointer}
+.status-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.room-bar-actions{display:flex;gap:8px;margin-left:auto}
+
+#qr-panel{display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:22px;flex-direction:column;align-items:center;gap:12px}
+#qr-panel.show{display:flex}
+#qr-box{width:170px;height:170px;background:#fff;border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.link-row{display:flex;gap:8px;align-items:center;width:100%;max-width:420px}
+.link-a{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  padding:8px 12px;font-size:11px;color:var(--muted);font-family:monospace;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none;display:block}
+
+/* upload area */
+.upload-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:18px;display:flex;flex-direction:column;gap:12px}
+.drop-area{border:2px dashed var(--border);border-radius:var(--radius-sm);padding:26px 16px;
+  text-align:center;color:var(--muted);font-size:13px;cursor:pointer;
+  transition:border-color .2s,background .2s;position:relative}
+.drop-area:hover,.drop-area.drag-over{border-color:var(--accent);background:#1a1a2e}
+.drop-area .icon{font-size:26px;margin-bottom:6px}
+.drop-area p{line-height:1.6}
+.drop-area input{position:absolute;inset:0;opacity:0;cursor:pointer;font-size:0}
+
+.upload-btn-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cap-btn{position:relative;padding:13px 0;border-radius:10px;font-size:13px;font-weight:600;
+  display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;
+  background:transparent;border:1px solid var(--border);color:var(--text);transition:border-color .2s,background .2s}
+.cap-btn:hover{border-color:var(--accent2);background:#1a1a2e}
+.cap-btn input{position:absolute;inset:0;opacity:0;cursor:pointer;font-size:0}
+
+.paste-hint{text-align:center;font-size:12px;color:var(--muted)}
+.paste-hint kbd{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;font-family:monospace;color:var(--accent2)}
+
+/* feed */
+#feed-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+.feed-label{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:14px}
+#feed-list{display:flex;flex-direction:column;gap:10px}
+.feed-empty{color:var(--muted);font-size:13px;text-align:center;padding:20px 0}
+
+.file-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:12px;display:flex;flex-direction:column;gap:8px}
+.file-card.mine{border-color:#33306a}
+.fc-top{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
+.fc-who{font-weight:700;padding:2px 8px;border-radius:12px;font-size:10px;letter-spacing:.5px}
+.fc-who.you{background:var(--accent-dim);color:var(--accent2)}
+.fc-who.peer{background:#052e16;color:#86efac}
+.fc-time{margin-left:auto}
+.fc-body{display:flex;gap:10px;align-items:center}
+.fc-icon{font-size:28px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;
+  background:var(--bg);border-radius:8px;flex-shrink:0}
+.fc-media img,.fc-media video{max-width:100%;max-height:260px;border-radius:8px;display:block;background:#111}
+.fc-info{flex:1;min-width:0}
+.fc-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fc-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.fc-actions{display:flex;gap:8px}
+.fc-actions .btn{flex:1}
+
+/* ── no-session fallback (e.g. camera scan unsupported) ── */
+.hidden{display:none !important}
+
+/* ── responsive tuning ── */
+@media(min-width:720px){
+  .room-bar{padding:18px 22px}
+  .upload-panel{padding:22px}
+  #feed-panel{padding:22px}
+}
+</style>
+</head>
+<body>
+
+<div id="paste-flash"></div>
+<div id="toast"></div>
+
+<div id="scan-overlay">
+  <div class="scan-top">
+    <strong>Scan invite QR</strong>
+    <button class="btn ghost" id="scan-close-btn">✕ Close</button>
+  </div>
+  <div id="qr-reader"></div>
+  <div class="scan-hint">Point your camera at the QR code shown on the other device</div>
+</div>
+
+<div id="app">
+  <div class="topbar">
+    <div class="logo">Pic<span>Beam</span></div>
+    <div class="tag">Any file · Any device</div>
+  </div>
+
+  <!-- ═══════ LANDING ═══════ -->
+  <div id="screen-landing">
+    <div class="landing-hero">
+      <h1>Send anything, from anything, to anything.</h1>
+      <p>Photos, videos, PDFs, zips — move files between your phone and laptop instantly. Whoever starts can share a code or QR; after that, both sides can send and receive freely.</p>
+    </div>
+    <div class="role-grid">
+      <div class="role-card" id="card-create">
+        <div class="role-icon">📤</div>
+        <h3>Start a session</h3>
+        <p>Get a code and QR code for other devices to join. You'll be able to send and receive too.</p>
+      </div>
+      <div class="role-card" id="card-join">
+        <div class="role-icon">📥</div>
+        <h3>Join a session</h3>
+        <p>Scan a QR code or type in a code from another device. You'll be able to send and receive too.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ JOIN ═══════ -->
+  <div id="screen-join">
+    <div class="join-box">
+      <h3>Join a session</h3>
+      <input id="join-code-inp" maxlength="6" placeholder="ABC123" autocomplete="off" autocapitalize="characters">
+      <button class="btn block" id="join-submit-btn">Join</button>
+      <div class="join-or">or</div>
+      <button class="btn secondary block" id="join-scan-btn">📷 Scan QR code</button>
+      <button class="btn ghost" id="join-back-btn">← Back</button>
+    </div>
+  </div>
+
+  <!-- ═══════ ROOM (symmetric — both peers send + receive here) ═══════ -->
+  <div id="screen-room">
+    <div class="room-bar">
+      <div class="code-chip" id="room-code" title="Tap to copy">------</div>
+      <div class="status-row"><div class="dot waiting" id="room-dot"></div><span id="room-status">Waiting for someone to join…</span></div>
+      <div class="room-bar-actions">
+        <button class="btn secondary sm" id="toggle-qr-btn">Invite</button>
+        <button class="btn secondary sm" id="clear-btn" title="Delete all files in this session from storage">🗑 Clear files</button>
+        <button class="btn secondary sm" id="leave-btn">Leave</button>
+      </div>
+    </div>
+
+    <div id="qr-panel">
+      <div id="qr-box"></div>
+      <div class="link-row">
+        <a class="link-a" id="room-link" href="#" target="_blank" rel="noopener">—</a>
+        <button class="btn sm" id="copy-link-btn">Copy</button>
+      </div>
+    </div>
+
+    <div class="upload-panel">
+      <div class="drop-area" id="drop-area">
+        <div class="icon">📁</div>
+        <p><strong>Drop any file here or tap to browse</strong><br>Images, video, documents, archives — any format, any size your connection can handle.</p>
+        <input type="file" multiple id="file-inp">
+      </div>
+      <div class="upload-btn-row">
+        <label class="cap-btn" for="cam-photo-inp"><span>📸</span><span>Photo</span>
+          <input type="file" accept="image/*" capture="environment" id="cam-photo-inp"></label>
+        <label class="cap-btn" for="cam-video-inp"><span>🎥</span><span>Video</span>
+          <input type="file" accept="video/*" capture="environment" id="cam-video-inp"></label>
+      </div>
+      <div class="paste-hint"><kbd>Ctrl</kbd>+<kbd>V</kbd> / <kbd>⌘V</kbd> to paste from clipboard</div>
+      <div class="progress-bar-wrap" id="prog-wrap" style="display:none"><div class="progress-bar" id="prog-bar"></div></div>
+    </div>
+
+    <div id="feed-panel">
+      <div class="feed-label">Transfers</div>
+      <div id="feed-list"><div class="feed-empty">No files sent yet — drop one above.</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   SUPABASE SETUP — run once in your Supabase SQL editor:
+
+   create table if not exists picbeam_rooms (
+     room_id text primary key,
+     created_at timestamptz default now()
+   );
+
+   create table if not exists picbeam_files (
+     id bigserial primary key,
+     room_id text not null,
+     sender_id text not null,
+     file_name text not null,
+     file_type text,
+     file_size bigint,
+     storage_path text not null,
+     created_at timestamptz default now()
+   );
+
+   create table if not exists picbeam_presence (
+     room_id text not null,
+     peer_id text not null,
+     last_seen timestamptz default now(),
+     primary key (room_id, peer_id)
+   );
+
+   alter table picbeam_rooms enable row level security;
+   alter table picbeam_files enable row level security;
+   alter table picbeam_presence enable row level security;
+   create policy "public rw rooms"     on picbeam_rooms     for all using (true) with check (true);
+   create policy "public rw files"     on picbeam_files     for all using (true) with check (true);
+   create policy "public rw presence"  on picbeam_presence  for all using (true) with check (true);
+
+   -- storage bucket for the actual file bytes (handles large videos etc.)
+   insert into storage.buckets (id, name, public) values ('picbeam','picbeam', true)
+   on conflict (id) do nothing;
+
+   create policy "public upload" on storage.objects for insert to public with check (bucket_id = 'picbeam');
+   create policy "public read"   on storage.objects for select to public using (bucket_id = 'picbeam');
+   create policy "public update" on storage.objects for update to public using (bucket_id = 'picbeam');
+
+   Note: Supabase's free tier caps individual file uploads (default 50MB,
+   raisable in Dashboard → Storage → Configuration → max file size, up to
+   plan limits). Very large videos may need that raised.
+
+   ── STORAGE CLEANUP ──
+   The app deletes a session's files automatically when the last device
+   leaves it (see leaveRoom / deleteRoomFiles below), and offers a manual
+   "Clear files" button any time. That covers normal use, but a device
+   that just closes the tab without hitting "Leave" won't trigger it — as
+   a safety net for abandoned sessions, optionally enable pg_cron in your
+   Supabase project (Database → Extensions) and schedule this to run
+   hourly, which purges anything untouched for 24h:
+
+   select cron.schedule('picbeam-purge', '0 * * * *', $$
+     delete from storage.objects
+       where bucket_id = 'picbeam'
+       and (metadata->>'lastModified')::bigint < (extract(epoch from now())*1000 - 86400000);
+     delete from picbeam_files where room_id in (
+       select room_id from picbeam_rooms where created_at < now() - interval '24 hours'
+     );
+     delete from picbeam_presence where last_seen < now() - interval '24 hours';
+     delete from picbeam_rooms where created_at < now() - interval '24 hours';
+   $$);
+═══════════════════════════════════════════════════════ */
+const SUPABASE_URL = 'https://ldrrdlugchfauxqsdsmf.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxkcnJkbHVnY2hmYXV4cXNkc21mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU2NzI3NDgsImV4cCI6MjA4MTI0ODc0OH0.wxAbam0aRmpUvTn_VIHUfdkGXj5Qn8FILIeoSF97N7A';
+const BUCKET      = 'picbeam';
+const SELF_URL     = location.origin + location.pathname;
+
+// ── STATE ────────────────────────────────────────────────
+let roomId       = '';
+let myId         = genId();
+let lastFileId   = 0;
+let heartbeatTmr = null;
+let pollTmr      = null;
+let qrScanner    = null;
+let peerSeen     = false;
+
+const urlParams   = new URLSearchParams(location.search);
+const URL_ROOM    = (urlParams.get('room') || '').toUpperCase().trim();
+
+function genId(){
+  return (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) ;
+}
+function genCode(){ return Math.random().toString(36).substr(2,6).toUpperCase(); }
+
+// ── SUPABASE HELPERS ─────────────────────────────────────
+async function sbFetch(method, path, body, extraHeaders){
+  const headers = {
+    'apikey': SUPABASE_KEY,
+    'Authorization': 'Bearer ' + SUPABASE_KEY,
+    'Content-Type': 'application/json',
+    ...(extraHeaders||{})
+  };
+  if(method === 'GET' || method === 'POST') headers['Prefer'] = headers['Prefer'] || 'return=representation';
+  const opts = { method, headers };
+  if(body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, opts);
+  if(!res.ok){
+    let t=''; try{ t = await res.text(); }catch(e){}
+    throw new Error(`Supabase ${res.status}: ${t}`);
+  }
+  return res;
+}
+
+function encodePath(path){ return path.split('/').map(encodeURIComponent).join('/'); }
+function publicUrl(path){ return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${encodePath(path)}`; }
+
+function uploadToStorage(file, path, onProgress){
+  return new Promise((resolve, reject)=>{
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodePath(path)}`);
+    xhr.setRequestHeader('apikey', SUPABASE_KEY);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + SUPABASE_KEY);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.setRequestHeader('x-upsert', 'true');
+    xhr.upload.onprogress = e=>{ if(e.lengthComputable && onProgress) onProgress(e.loaded/e.total); };
+    xhr.onload  = ()=> (xhr.status>=200 && xhr.status<300) ? resolve() : reject(new Error(`Upload failed (${xhr.status})`));
+    xhr.onerror = ()=> reject(new Error('Network error during upload'));
+    xhr.send(file);
+  });
+}
+
+// ── SHARED UTILS ─────────────────────────────────────────
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=> t.classList.remove('show'), 2800);
+}
+function pasteFlash(){
+  const el = document.getElementById('paste-flash');
+  el.classList.add('show'); setTimeout(()=> el.classList.remove('show'), 350);
+}
+function sleep(ms){ return new Promise(r=> setTimeout(r, ms)); }
+function fmtBytes(n){
+  if(!n && n!==0) return '—';
+  const u=['B','KB','MB','GB']; let i=0;
+  while(n>=1024 && i<u.length-1){ n/=1024; i++; }
+  return `${n.toFixed(i? 1:0)} ${u[i]}`;
+}
+function fmtTime(iso){
+  try{ return new Date(iso).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
+  catch(e){ return ''; }
+}
+function iconFor(type, name){
+  type = type||''; name = (name||'').toLowerCase();
+  if(type.startsWith('image/')) return '🖼';
+  if(type.startsWith('video/')) return '🎥';
+  if(type.startsWith('audio/')) return '🎵';
+  if(type.includes('pdf') || name.endsWith('.pdf')) return '📄';
+  if(/\.(zip|rar|7z|tar|gz)$/.test(name)) return '📦';
+  if(/\.(doc|docx)$/.test(name)) return '📝';
+  if(/\.(xls|xlsx|csv)$/.test(name)) return '📊';
+  if(/\.(ppt|pptx)$/.test(name)) return '📽';
+  return '📁';
+}
+
+async function extractFiles(dt){
+  const files = [];
+  if(dt.files && dt.files.length){ for(const f of dt.files) files.push(f); return files; }
+  if(dt.items){
+    for(const item of dt.items) if(item.kind==='file'){ const f=item.getAsFile(); if(f) files.push(f); }
+  }
+  return files;
+}
+
+// ── SCREEN SWITCHING ─────────────────────────────────────
+function showScreen(name){
+  document.getElementById('screen-landing').style.display = name==='landing' ? 'flex' : 'none';
+  document.getElementById('screen-join').style.display    = name==='join'    ? 'flex' : 'none';
+  document.getElementById('screen-room').style.display     = name==='room'    ? 'flex' : 'none';
+}
+
+document.getElementById('card-create').addEventListener('click', createRoom);
+document.getElementById('card-join').addEventListener('click', ()=> showScreen('join'));
+document.getElementById('join-back-btn').addEventListener('click', ()=> showScreen('landing'));
+document.getElementById('join-submit-btn').addEventListener('click', ()=>{
+  const v = document.getElementById('join-code-inp').value.trim().toUpperCase();
+  if(v.length < 4){ showToast('⚠ Enter a valid code'); return; }
+  joinRoom(v);
+});
+document.getElementById('join-code-inp').addEventListener('input', e=>{ e.target.value = e.target.value.toUpperCase(); });
+document.getElementById('join-code-inp').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('join-submit-btn').click(); });
+
+(function init(){
+  fetch(`${SUPABASE_URL}/rest/v1/picbeam_rooms?limit=1`, {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+  }).then(r=>{ if(!r.ok) showToast(`⚠ Database error ${r.status} — check Supabase setup`); })
+    .catch(()=> showToast('⚠ Cannot reach database — check internet / Supabase URL'));
+
+  if(URL_ROOM){ joinRoom(URL_ROOM); } else { showScreen('landing'); }
+})();
+
+// ── ROOM LIFECYCLE ───────────────────────────────────────
+async function createRoom(){
+  roomId = genCode();
+  try{
+    await sbFetch('POST', 'picbeam_rooms', {room_id:roomId}, {'Prefer':'resolution=ignore-duplicates,return=minimal'});
+  }catch(e){ /* non-fatal */ }
+  enterRoom();
+  document.getElementById('qr-panel').classList.add('show');
+  showToast('Session started — share the code or QR');
+}
+
+async function joinRoom(code){
+  roomId = code;
+  try{
+    await sbFetch('POST', 'picbeam_rooms', {room_id:roomId}, {'Prefer':'resolution=ignore-duplicates,return=minimal'});
+  }catch(e){ /* non-fatal */ }
+  enterRoom();
+  showToast('Joined session ' + roomId);
+}
+
+function enterRoom(){
+  lastFileId = 0; peerSeen = false;
+  document.getElementById('room-code').textContent = roomId;
+  const url = `${SELF_URL}?room=${roomId}`;
+  const la = document.getElementById('room-link');
+  la.textContent = url; la.href = url;
+
+  const qrBox = document.getElementById('qr-box');
+  qrBox.innerHTML = '';
+  try{ new QRCode(qrBox,{text:url,width:150,height:150,colorDark:'#1a0f4a',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M}); }
+  catch(e){ qrBox.textContent='QR unavailable'; }
+
+  setRoomStatus('waiting','Waiting for someone to join…');
+  document.getElementById('feed-list').innerHTML = '<div class="feed-empty">No files sent yet — drop one above.</div>';
+  showScreen('room');
+  loadHistory();
+  startLoops();
+}
+
+async function leaveRoom(){
+  const leavingRoom = roomId;
+  stopLoops();
+  roomId = '';
+  document.getElementById('qr-panel').classList.remove('show');
+  const u = new URL(location.href); u.searchParams.delete('room'); history.replaceState(null,'',u);
+  showScreen('landing');
+
+  // Drop my own presence row immediately, then check if anyone else is
+  // still around — if not, this was the last device, so purge the
+  // session's files instead of leaving them in storage indefinitely.
+  try{ await sbFetch('DELETE', `picbeam_presence?room_id=eq.${leavingRoom}&peer_id=eq.${myId}`); }catch(e){}
+  try{
+    const since = new Date(Date.now()-15000).toISOString();
+    const others = await (await sbFetch('GET', `picbeam_presence?room_id=eq.${leavingRoom}&last_seen=gt.${since}&select=peer_id`)).json();
+    if(!others || !others.length){
+      await deleteRoomFiles(leavingRoom);
+    }
+  }catch(e){}
+}
+
+// Removes every file this session holds for a room — from Storage AND
+// the metadata table — plus the room/presence rows. Used when the last
+// device leaves, and by the manual "Clear files" button.
+async function deleteRoomFiles(targetRoomId){
+  try{
+    const rows = await (await sbFetch('GET', `picbeam_files?room_id=eq.${targetRoomId}&select=storage_path`)).json();
+    const paths = (rows||[]).map(r=> r.storage_path);
+    if(paths.length){
+      await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
+        method: 'DELETE',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer '+SUPABASE_KEY, 'Content-Type':'application/json' },
+        body: JSON.stringify({ prefixes: paths })
+      });
+    }
+    await sbFetch('DELETE', `picbeam_files?room_id=eq.${targetRoomId}`);
+    await sbFetch('DELETE', `picbeam_presence?room_id=eq.${targetRoomId}`);
+    await sbFetch('DELETE', `picbeam_rooms?room_id=eq.${targetRoomId}`);
+    return true;
+  }catch(e){ return false; }
+}
+
+function setRoomStatus(state, text){
+  document.getElementById('room-dot').className = 'dot '+state;
+  document.getElementById('room-status').textContent = text;
+}
+
+document.getElementById('leave-btn').addEventListener('click', leaveRoom);
+document.getElementById('clear-btn').addEventListener('click', async ()=>{
+  if(!roomId) return;
+  if(!confirm('Delete every file in this session for everyone? This can\'t be undone.')) return;
+  showToast('Clearing files…');
+  const ok = await deleteRoomFiles(roomId);
+  if(ok){
+    document.getElementById('feed-list').innerHTML = '<div class="feed-empty">No files sent yet — drop one above.</div>';
+    lastFileId = 0;
+    showToast('🗑 Files cleared');
+  } else {
+    showToast('⚠ Could not clear files — try again');
+  }
+});
+document.getElementById('toggle-qr-btn').addEventListener('click', ()=> document.getElementById('qr-panel').classList.toggle('show'));
+document.getElementById('room-code').addEventListener('click', ()=> copyText(roomId, 'Code copied!'));
+document.getElementById('copy-link-btn').addEventListener('click', ()=> copyText(document.getElementById('room-link').textContent, 'Link copied!'));
+
+function copyText(text, okMsg){
+  if(!text || text==='—') return;
+  navigator.clipboard.writeText(text).then(()=> showToast(okMsg)).catch(()=>{
+    const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta); showToast(okMsg);
+  });
+}
+
+// ── PRESENCE + POLLING LOOPS ─────────────────────────────
+function startLoops(){
+  stopLoops();
+  heartbeat();
+  pollOnce();
+  heartbeatTmr = setInterval(heartbeat, 5000);
+  pollTmr      = setInterval(pollOnce, 3000);
+}
+function stopLoops(){
+  if(heartbeatTmr) clearInterval(heartbeatTmr); heartbeatTmr=null;
+  if(pollTmr) clearInterval(pollTmr); pollTmr=null;
+}
+
+async function heartbeat(){
+  if(!roomId) return;
+  try{
+    await sbFetch('POST', 'picbeam_presence?on_conflict=room_id,peer_id',
+      {room_id:roomId, peer_id:myId, last_seen:new Date().toISOString()},
+      {'Prefer':'resolution=merge-duplicates,return=minimal'});
+  }catch(e){}
+}
+
+async function pollOnce(){
+  if(!roomId) return;
+  try{
+    const since = new Date(Date.now()-15000).toISOString();
+    const pres = await (await sbFetch('GET', `picbeam_presence?room_id=eq.${roomId}&peer_id=neq.${myId}&last_seen=gt.${since}&select=peer_id`)).json();
+    const connected = pres && pres.length > 0;
+    if(connected && !peerSeen){ peerSeen = true; setRoomStatus('connected', pres.length>1? `${pres.length} peers connected`: 'Peer connected — ready'); showToast('🔗 Peer connected'); }
+    else if(connected){ setRoomStatus('connected', pres.length>1? `${pres.length} peers connected`: 'Peer connected — ready'); }
+    else if(!connected && peerSeen){ peerSeen=false; setRoomStatus('waiting','Peer disconnected — waiting…'); }
+  }catch(e){}
+
+  try{
+    const rows = await (await sbFetch('GET', `picbeam_files?room_id=eq.${roomId}&id=gt.${lastFileId}&sender_id=neq.${myId}&order=id.asc`)).json();
+    if(rows && rows.length){
+      for(const r of rows){ addFeedCard(r, 'peer'); lastFileId = Math.max(lastFileId, r.id); }
+      showToast(rows.length>1 ? `📥 ${rows.length} files received` : '📥 File received');
+    }
+  }catch(e){}
+}
+
+async function loadHistory(){
+  try{
+    const rows = await (await sbFetch('GET', `picbeam_files?room_id=eq.${roomId}&order=id.asc`)).json();
+    if(rows && rows.length){
+      document.getElementById('feed-list').innerHTML = '';
+      for(const r of rows){ addFeedCard(r, r.sender_id===myId ? 'you' : 'peer'); lastFileId = Math.max(lastFileId, r.id); }
+    }
+  }catch(e){}
+}
+
+// ── FEED RENDERING ───────────────────────────────────────
+function addFeedCard(rec, who){
+  const list = document.getElementById('feed-list');
+  const empty = list.querySelector('.feed-empty'); if(empty) empty.remove();
+
+  const card = document.createElement('div');
+  card.className = 'file-card' + (who==='you' ? ' mine' : '');
+
+  const top = document.createElement('div'); top.className='fc-top';
+  const whoTag = document.createElement('span'); whoTag.className='fc-who '+who; whoTag.textContent = who==='you'?'YOU':'PEER';
+  const time = document.createElement('span'); time.className='fc-time'; time.textContent = fmtTime(rec.created_at || new Date().toISOString());
+  top.appendChild(whoTag); top.appendChild(time);
+
+  const body = document.createElement('div'); body.className='fc-body';
+  const url = publicUrl(rec.storage_path);
+  const type = rec.file_type || '';
+
+  if(type.startsWith('image/')){
+    const wrap = document.createElement('div'); wrap.className='fc-media';
+    const img = document.createElement('img'); img.src = url; img.loading='lazy';
+    wrap.appendChild(img); body.appendChild(wrap);
+  } else if(type.startsWith('video/')){
+    const wrap = document.createElement('div'); wrap.className='fc-media';
+    const vid = document.createElement('video'); vid.src=url; vid.controls=true; vid.preload='metadata';
+    wrap.appendChild(vid); body.appendChild(wrap);
+  } else {
+    const icon = document.createElement('div'); icon.className='fc-icon'; icon.textContent = iconFor(type, rec.file_name);
+    body.appendChild(icon);
+    const info = document.createElement('div'); info.className='fc-info';
+    const nm = document.createElement('div'); nm.className='fc-name'; nm.textContent = rec.file_name;
+    const mt = document.createElement('div'); mt.className='fc-meta'; mt.textContent = fmtBytes(rec.file_size);
+    info.appendChild(nm); info.appendChild(mt);
+    body.appendChild(info);
+  }
+  card.appendChild(top); card.appendChild(body);
+
+  if(type.startsWith('image/') || type.startsWith('video/')){
+    const meta = document.createElement('div'); meta.className='fc-meta';
+    meta.textContent = `${rec.file_name} · ${fmtBytes(rec.file_size)}`;
+    card.appendChild(meta);
+  }
+
+  const actions = document.createElement('div'); actions.className='fc-actions';
+  const dl = document.createElement('a'); dl.href=url; dl.download=rec.file_name; dl.target='_blank'; dl.className='btn sm';
+  dl.textContent = '⬇ Download';
+  actions.appendChild(dl);
+  card.appendChild(actions);
+
+  list.insertBefore(card, list.firstChild);
+  card.classList.add('flash'); setTimeout(()=> card.classList.remove('flash'), 1400);
+}
+
+function addPendingCard(file){
+  const list = document.getElementById('feed-list');
+  const empty = list.querySelector('.feed-empty'); if(empty) empty.remove();
+  const card = document.createElement('div'); card.className='file-card mine';
+  const top = document.createElement('div'); top.className='fc-top';
+  top.innerHTML = `<span class="fc-who you">YOU</span><span class="fc-time">sending…</span>`;
+  const body = document.createElement('div'); body.className='fc-body';
+  const icon = document.createElement('div'); icon.className='fc-icon'; icon.textContent = iconFor(file.type, file.name);
+  const info = document.createElement('div'); info.className='fc-info';
+  info.innerHTML = `<div class="fc-name">${file.name}</div><div class="fc-meta">${fmtBytes(file.size)}</div>`;
+  body.appendChild(icon); body.appendChild(info);
+  const pw = document.createElement('div'); pw.className='progress-bar-wrap';
+  const pb = document.createElement('div'); pb.className='progress-bar'; pw.appendChild(pb);
+  card.appendChild(top); card.appendChild(body); card.appendChild(pw);
+  list.insertBefore(card, list.firstChild);
+  return {card, pb};
+}
+
+// ── SEND FLOW ─────────────────────────────────────────────
+async function handleFiles(files){
+  if(!files || !files.length) return;
+  if(!roomId){ showToast('⚠ Join or start a session first'); return; }
+  const arr = [...files];
+
+  for(let i=0; i<arr.length; i++){
+    const file = arr[i];
+    const pend = addPendingCard(file);
+    setRoomStatus('sending', arr.length>1 ? `Sending ${i+1}/${arr.length}…` : 'Sending…');
+    try{
+      const safeName = file.name.replace(/[^\w.\-]+/g,'_');
+      const path = `${roomId}/${Date.now()}_${Math.random().toString(36).slice(2,7)}_${safeName}`;
+      await uploadToStorage(file, path, frac=>{ pend.pb.style.width = Math.round(frac*100)+'%'; });
+
+      const rows = await (await sbFetch('POST', 'picbeam_files', {
+        room_id: roomId, sender_id: myId, file_name: file.name,
+        file_type: file.type || 'application/octet-stream', file_size: file.size, storage_path: path
+      })).json();
+      if(rows && rows[0]) lastFileId = Math.max(lastFileId, rows[0].id);
+
+      pend.card.remove();
+      addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, storage_path:path, created_at:new Date().toISOString()}, 'you');
+    }catch(e){
+      pend.card.querySelector('.fc-time').textContent = 'failed';
+      pend.pb.style.background = 'var(--danger)';
+      showToast('⚠ Failed to send ' + file.name + ' — try a smaller file or check connection');
+    }
+  }
+  setRoomStatus(peerSeen ? 'connected' : 'waiting', peerSeen ? 'Peer connected — ready' : 'Waiting for someone to join…');
+  showToast(arr.length>1 ? `✓ ${arr.length} files sent` : '✓ File sent');
+}
+
+// drop area
+const dropArea = document.getElementById('drop-area');
+dropArea.addEventListener('dragover', e=>{ e.preventDefault(); dropArea.classList.add('drag-over'); });
+dropArea.addEventListener('dragleave', e=>{ if(!dropArea.contains(e.relatedTarget)) dropArea.classList.remove('drag-over'); });
+dropArea.addEventListener('drop', async e=>{
+  e.preventDefault(); dropArea.classList.remove('drag-over');
+  const files = await extractFiles(e.dataTransfer);
+  files.length ? handleFiles(files) : showToast('⚠ No files in drop');
+});
+document.getElementById('file-inp').addEventListener('change', e=> handleFiles(e.target.files));
+document.getElementById('cam-photo-inp').addEventListener('change', e=> handleFiles(e.target.files));
+document.getElementById('cam-video-inp').addEventListener('change', e=> handleFiles(e.target.files));
+
+// global paste + full-page drop (only act inside a room)
+document.addEventListener('paste', async e=>{
+  if(!roomId) return;
+  const dt = e.clipboardData; if(!dt) return;
+  const files = await extractFiles(dt);
+  if(!files.length) return;
+  pasteFlash(); handleFiles(files);
+});
+document.addEventListener('dragover', e=> e.preventDefault());
+document.addEventListener('drop', async e=>{
+  e.preventDefault();
+  if(!roomId) return;
+  if(dropArea.contains(e.target)) return;
+  const files = await extractFiles(e.dataTransfer);
+  if(files.length) handleFiles(files);
+});
+
+// ── QR SCANNER (join flow) ───────────────────────────────
+document.getElementById('join-scan-btn').addEventListener('click', startScanner);
+document.getElementById('scan-close-btn').addEventListener('click', stopScanner);
+
+function startScanner(){
+  if(typeof Html5Qrcode === 'undefined'){ showToast('⚠ Scanner unavailable — enter the code manually'); return; }
+  document.getElementById('scan-overlay').classList.add('show');
+  qrScanner = new Html5Qrcode('qr-reader');
+  qrScanner.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: 240 },
+    decodedText=>{
+      let code = decodedText.trim();
+      try{ const u = new URL(decodedText); code = (u.searchParams.get('room')||code).toUpperCase(); }catch(e){ code = code.toUpperCase(); }
+      stopScanner();
+      joinRoom(code);
+    },
+    ()=>{ /* per-frame scan miss, ignore */ }
+  ).catch(()=>{
+    showToast('⚠ Camera unavailable — enter the code manually');
+    document.getElementById('scan-overlay').classList.remove('show');
+  });
+}
+function stopScanner(){
+  document.getElementById('scan-overlay').classList.remove('show');
+  if(qrScanner){ qrScanner.stop().then(()=> qrScanner.clear()).catch(()=>{}); qrScanner=null; }
+}
+</script>
+</body>
+</html>
