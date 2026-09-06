@@ -294,6 +294,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
      file_type text,
      file_size bigint,
      storage_path text not null,
+     compressed boolean not null default false,
      created_at timestamptz default now()
    );
 
@@ -354,13 +355,26 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
    whatever your upload/download speeds actually are.
 
    ── STORAGE CLEANUP ──
-   The app deletes a session's files automatically when the last device
-   leaves it (see leaveRoom / deleteRoomFiles below), and offers a manual
-   "Clear files" button any time. That covers normal use, but a device
-   that just closes the tab without hitting "Leave" won't trigger it — as
-   a safety net for abandoned sessions, optionally enable pg_cron in your
-   Supabase project (Database → Extensions) and schedule this to run
-   hourly, which purges anything untouched for 24h:
+   Three layers, from most to least immediate:
+   1. Per-file: once a peer's device receives a relay file, it sends a
+      tiny "ack" signal back and the sender immediately deletes that
+      one object from Storage — no waiting for the session to end.
+   2. Per-session: the moment either side notices the other has gone
+      (heartbeat timeout) OR clicks "Leave" / "Clear files", every
+      remaining file for that room is purged from Storage + the tables.
+   3. Safety net: pg_cron (enabled below) purges anything untouched for
+      24h, in case a tab is closed hard enough that neither of the above
+      gets a chance to run.
+
+   ── COMPRESSION (relay path only) ──
+   Before a file goes through the relay, prepareForRelay() tries to
+   shrink it: images get a real lossy recompress (resize + re-encode,
+   biggest win); everything else is tried through gzip and only kept if
+   it actually helps. Video/audio are left untouched on purpose — gzip
+   barely shrinks already-compressed media, and compressing would break
+   the browser's ability to stream/seek the file straight off its URL.
+   The `compressed` column on picbeam_files records which files were
+   gzipped so the receiving device knows to decompress on download.
 
    select cron.schedule('picbeam-purge', '0 * * * *', $$
      delete from storage.objects
@@ -393,7 +407,17 @@ const rtcPeers      = new Map();   // peer_id -> { pc, dc, connecting }
 const incoming      = new Map();   // transfer id -> { name, type, size, chunks, received, from }
 
 const ICE_SERVERS = [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  // Public TURN relay (Open Relay Project) — used only when a fully
+  // direct connection can't be found (symmetric NAT, some carrier/
+  // corporate networks). Still WebRTC end-to-end, still no Supabase
+  // hop, just relayed at the network level instead of routed directly.
+  // It's a shared free/test service — fine for personal use, but swap
+  // in your own TURN credentials (Twilio, Cloudflare, Metered.ca, etc.)
+  // if you need guaranteed uptime.
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
 const P2P_CHUNK = 16 * 1024;          // per-message chunk size
 const P2P_HIGH_WATER = 1 * 1024 * 1024;   // pause sending above this
@@ -450,6 +474,54 @@ function uploadToStorage(file, path, onProgress){
     xhr.onerror = ()=> reject(new Error('Network error during upload'));
     xhr.send(file);
   });
+}
+
+// ── COMPRESSION (relay path only — P2P transfers go raw, no need) ───────
+// Images: real lossy recompression (resize + re-encode) — the actual win.
+// Videos/audio: left alone. They're already compressed and re-squeezing
+// them client-side would cost real time for near-zero savings, and would
+// break the browser's ability to stream/seek them straight off the URL —
+// exactly the wrong tradeoff for the "large videos, fast" use case.
+// Everything else (docs, text, uncompressed archives): tried through
+// gzip, kept only if it actually shrinks the file.
+async function compressImage(file, maxDim=1920, quality=0.82){
+  try{
+    const bitmap = await createImageBitmap(file);
+    let {width:w, height:h} = bitmap;
+    if(w<=maxDim && h<=maxDim && file.size < 400*1024) return null; // already small — not worth it
+    if(w>maxDim || h>maxDim){
+      if(w>h){ h=Math.round(h*maxDim/w); w=maxDim; } else { w=Math.round(w*maxDim/h); h=maxDim; }
+    }
+    const canvas = document.createElement('canvas'); canvas.width=w; canvas.height=h;
+    canvas.getContext('2d').drawImage(bitmap,0,0,w,h);
+    const keepFormat = (file.type==='image/png' || file.type==='image/gif') ? file.type : 'image/jpeg';
+    const blob = await new Promise(res=> canvas.toBlob(res, keepFormat, quality));
+    return (blob && blob.size < file.size) ? blob : null;
+  }catch(e){ return null; }
+}
+async function gzipIfSmaller(file){
+  if(typeof CompressionStream === 'undefined') return null;
+  try{
+    const stream = file.stream().pipeThrough(new CompressionStream('gzip'));
+    const buf = await new Response(stream).arrayBuffer();
+    return (buf.byteLength < file.size*0.95) ? new Blob([buf], {type:'application/gzip'}) : null;
+  }catch(e){ return null; }
+}
+async function gunzipToBlob(resp, originalType){
+  const stream = resp.body.pipeThrough(new DecompressionStream('gzip'));
+  const buf = await new Response(stream).arrayBuffer();
+  return new Blob([buf], { type: originalType || 'application/octet-stream' });
+}
+// Returns { blob, compressed } — blob to actually upload, compressed flag for the DB row.
+async function prepareForRelay(file){
+  if(file.type.startsWith('image/')){
+    const smaller = await compressImage(file);
+    if(smaller) return { blob:smaller, compressed:false };
+  } else if(!file.type.startsWith('video/') && !file.type.startsWith('audio/')){
+    const gz = await gzipIfSmaller(file);
+    if(gz) return { blob:gz, compressed:true };
+  }
+  return { blob:file, compressed:false };
 }
 
 // ── SHARED UTILS ─────────────────────────────────────────
@@ -584,6 +656,19 @@ async function leaveRoom(){
   }catch(e){}
 }
 
+// Deletes one already-delivered relay file (Storage object + its row) —
+// the per-file counterpart to deleteRoomFiles, fired on delivery "ack".
+async function deleteSingleRelayFile(fileId, storagePath){
+  try{
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer '+SUPABASE_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({ prefixes: [storagePath] })
+    });
+    await sbFetch('DELETE', `picbeam_files?id=eq.${fileId}`);
+  }catch(e){}
+}
+
 // Removes every file this session holds for a room — from Storage AND
 // the metadata table — plus the room/presence rows. Used when the last
 // device leaves, and by the manual "Clear files" button.
@@ -679,18 +764,39 @@ async function pollOnce(){
         showToast('🔗 Peer connected');
       }
     }
-    // gone offline — drop their connection
+    // gone offline — drop their connection; if that leaves the room
+    // empty and I was actually connected to someone, this session is
+    // over — clean up its files now rather than waiting on a click or
+    // the hourly safety-net job.
+    let justEmptied = false;
     for(const pid of [...presencePeers]){
       if(!nowOnline.has(pid)){ presencePeers.delete(pid); teardownPeer(pid); }
     }
+    if(peerSeen && presencePeers.size===0) justEmptied = true;
     peerSeen = presencePeers.size > 0;
     refreshRoomStatus();
+    if(justEmptied){
+      setRoomStatus('waiting','Peer disconnected — clearing session files…');
+      deleteRoomFiles(roomId).then(ok=>{
+        if(ok){
+          document.getElementById('feed-list').innerHTML = '<div class="feed-empty">No files sent yet — drop one above.</div>';
+          lastFileId = 0;
+          setRoomStatus('waiting','Waiting for someone to join…');
+        }
+      });
+    }
   }catch(e){}
 
   try{
     const rows = await (await sbFetch('GET', `picbeam_files?room_id=eq.${roomId}&id=gt.${lastFileId}&sender_id=neq.${myId}&order=id.asc`)).json();
     if(rows && rows.length){
-      for(const r of rows){ addFeedCard(r, 'peer'); lastFileId = Math.max(lastFileId, r.id); }
+      for(const r of rows){
+        addFeedCard(r, 'peer');
+        lastFileId = Math.max(lastFileId, r.id);
+        // Let the sender know their relay copy has been delivered, so
+        // they can delete it from Storage right away ("work completed").
+        sendSignal(r.sender_id, 'ack', { file_id:r.id, storage_path:r.storage_path });
+      }
       showToast(rows.length>1 ? `📥 ${rows.length} files received` : '📥 File received');
     }
   }catch(e){}
@@ -791,6 +897,10 @@ async function pollSignals(){
       } else if(row.kind === 'ice'){
         const entry = rtcPeers.get(from);
         if(entry && entry.pc){ try{ await entry.pc.addIceCandidate(row.payload); }catch(e){} }
+      } else if(row.kind === 'ack'){
+        // Peer confirmed they received this relay file — "work completed",
+        // so delete our uploaded copy from Storage right away.
+        deleteSingleRelayFile(row.payload.file_id, row.payload.storage_path);
       }
     }
   }catch(e){}
@@ -911,9 +1021,25 @@ function addFeedCard(rec, who){
   }
 
   const actions = document.createElement('div'); actions.className='fc-actions';
-  const dl = document.createElement('a'); dl.href=url; dl.download=rec.file_name; dl.target='_blank'; dl.className='btn sm';
-  dl.textContent = '⬇ Download';
-  actions.appendChild(dl);
+  if(rec.compressed){
+    const dl = document.createElement('button'); dl.className='btn sm'; dl.textContent='⬇ Download';
+    dl.addEventListener('click', async ()=>{
+      const orig = dl.textContent; dl.textContent='Decompressing…'; dl.disabled=true;
+      try{
+        const resp = await fetch(url);
+        const blob = await gunzipToBlob(resp, rec.file_type);
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href=objUrl; a.download=rec.file_name; a.click();
+        setTimeout(()=> URL.revokeObjectURL(objUrl), 30000);
+      }catch(e){ showToast('⚠ Could not decompress ' + rec.file_name); }
+      dl.textContent = orig; dl.disabled=false;
+    });
+    actions.appendChild(dl);
+  } else {
+    const dl = document.createElement('a'); dl.href=url; dl.download=rec.file_name; dl.target='_blank'; dl.className='btn sm';
+    dl.textContent = '⬇ Download';
+    actions.appendChild(dl);
+  }
   card.appendChild(actions);
 
   list.insertBefore(card, list.firstChild);
@@ -959,7 +1085,7 @@ async function handleFiles(files){
         const openEntries = [...rtcPeers.values()].filter(e=> e.dc && e.dc.readyState==='open');
         await Promise.all(openEntries.map(e=> sendFileP2P(e.dc, file, frac=>{ pend.pb.style.width = Math.round(frac*100)+'%'; })));
         pend.card.remove();
-        addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, via:'p2p', created_at:new Date().toISOString()}, 'you');
+        addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, blob_url:URL.createObjectURL(file), via:'p2p', created_at:new Date().toISOString()}, 'you');
       } else {
         await sendFileViaRelay(file, pend);
       }
@@ -980,20 +1106,22 @@ async function handleFiles(files){
 }
 
 // Fallback path: uploads to Supabase Storage so any device in the room
-// can pick it up, used when a direct P2P link isn't available.
+// can pick it up, used when a direct P2P link isn't available. Applies
+// compression first where it actually helps (see prepareForRelay).
 async function sendFileViaRelay(file, pend){
+  const { blob, compressed } = await prepareForRelay(file);
   const safeName = file.name.replace(/[^\w.\-]+/g,'_');
   const path = `${roomId}/${Date.now()}_${Math.random().toString(36).slice(2,7)}_${safeName}`;
-  await uploadToStorage(file, path, frac=>{ pend.pb.style.width = Math.round(frac*100)+'%'; });
+  await uploadToStorage(blob, path, frac=>{ pend.pb.style.width = Math.round(frac*100)+'%'; });
 
   const rows = await (await sbFetch('POST', 'picbeam_files', {
     room_id: roomId, sender_id: myId, file_name: file.name,
-    file_type: file.type || 'application/octet-stream', file_size: file.size, storage_path: path
+    file_type: file.type || 'application/octet-stream', file_size: file.size, storage_path: path, compressed
   })).json();
   if(rows && rows[0]) lastFileId = Math.max(lastFileId, rows[0].id);
 
   pend.card.remove();
-  addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, storage_path:path, via:'relay', created_at:new Date().toISOString()}, 'you');
+  addFeedCard({file_name:file.name, file_type:file.type, file_size:file.size, storage_path:path, compressed, via:'relay', created_at:new Date().toISOString()}, 'you');
 }
 
 // drop area
